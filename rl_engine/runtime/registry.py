@@ -107,6 +107,15 @@ class OpBackend(Enum, metaclass=_KernelEnumMeta):
 
     # Variable-length packing (pack-and-pad), [B,S,...] -> [Total_Active,...]
     PYTORCH_PACK = "rl_engine.kernels.ops.pytorch.packing.pack.NativePackOp"
+    PYTORCH_VIDEO_PATCH_PACK_UNPACK = (
+        "rl_engine.reference.packing.video_patch_pack_unpack.NativeVideoPatchPackUnpackOp"
+    )
+    CUDA_VIDEO_PATCH_PACK_UNPACK = (
+        "rl_engine.backends.cuda.packing.video_patch_pack_unpack.CudaVideoPatchPackUnpackOp"
+    )
+    TRITON_VIDEO_PATCH_PACK_UNPACK = (
+        "rl_engine.backends.shared.triton.video_patch_pack_unpack.TritonVideoPatchPackUnpackOp"
+    )
     # Batch-invariant deterministic GEMM (WS1 #146)
     CUDA_DET_GEMM = "rl_engine.kernels.ops.cuda.matmul.det_gemm.DetGemmOp"
     TRITON_DET_GEMM = "rl_engine.kernels.ops.triton.matmul.det_gemm.TritonDetGemmOp"
@@ -203,6 +212,59 @@ class OpBackend(Enum, metaclass=_KernelEnumMeta):
 
 def _default_semantic_descriptors() -> tuple[OperatorBackendDescriptor, ...]:
     return (
+        *(
+            OperatorBackendDescriptor(
+                semantic_op="video_patch_pack_unpack",
+                backend_id=backend_id,
+                supported_targets=frozenset({"rollout", "training"}),
+                supported_devices=frozenset(devices),
+                supported_dtypes=frozenset({"float32", "float16", "bfloat16"}),
+                supported_topologies={
+                    "rollout": {
+                        "world_size": (1,),
+                        "tensor_parallel_size": (1,),
+                        "context_parallel_size": (1,),
+                    },
+                    "training": {"world_size": (1,), "sharding": ("unsharded",)},
+                },
+                determinism_or_alignment_properties={
+                    "algorithm": algorithm,
+                    "channels": 24,
+                    "patch_size": {"t": 1, "h": 2, "w": 2},
+                    "batch_invariant": True,
+                    "deterministic": True,
+                    "bitwise": True,
+                    "strict_observable": True,
+                },
+                lifecycle=OperatorLifecycle.REQUEST,
+                implementation_class_or_factory=backend.value,
+                fallback_policy=OperatorFallbackPolicy.ERROR,
+                version_or_build_fingerprint=fingerprint,
+            )
+            for backend_id, devices, algorithm, backend, fingerprint in (
+                (
+                    "pytorch-video-patch-pack-unpack-v1",
+                    {"cpu", "cuda"},
+                    "reshape_permute_contiguous",
+                    OpBackend.PYTORCH_VIDEO_PATCH_PACK_UNPACK,
+                    "h3-video-patch-reference-v1",
+                ),
+                (
+                    "cuda-video-patch-pack-unpack-v1",
+                    {"cuda"},
+                    "shared_memory_pair_transpose_tile16",
+                    OpBackend.CUDA_VIDEO_PATCH_PACK_UNPACK,
+                    "h3-video-patch-cuda-tile16-v1",
+                ),
+                (
+                    "triton-video-patch-pack-unpack-v1",
+                    {"cuda"},
+                    "integer_gather_scatter_block256",
+                    OpBackend.TRITON_VIDEO_PATCH_PACK_UNPACK,
+                    "h3-video-patch-triton-block256-v1",
+                ),
+            )
+        ),
         OperatorBackendDescriptor(
             semantic_op="selected_logprob",
             backend_id="rlkernel.reference_logp",
@@ -584,6 +646,11 @@ class KernelRegistry:
                 ],
                 "ratio_kl": [OpBackend.TRITON_RATIO_KL, OpBackend.PYTORCH_RATIO_KL],
                 "pack": [OpBackend.PYTORCH_PACK],
+                "video_patch_pack_unpack": [
+                    OpBackend.CUDA_VIDEO_PATCH_PACK_UNPACK,
+                    OpBackend.TRITON_VIDEO_PATCH_PACK_UNPACK,
+                    OpBackend.PYTORCH_VIDEO_PATCH_PACK_UNPACK,
+                ],
                 "det_gemm": [OpBackend.CUDA_DET_GEMM, OpBackend.TRITON_DET_GEMM],
                 "batch_invariant_logp": [
                     OpBackend.TRITON_BATCH_INVARIANT_LOGP,
@@ -638,6 +705,10 @@ class KernelRegistry:
                 ],
                 "ratio_kl": [OpBackend.TRITON_RATIO_KL, OpBackend.PYTORCH_RATIO_KL],
                 "pack": [OpBackend.PYTORCH_PACK],
+                "video_patch_pack_unpack": [
+                    OpBackend.TRITON_VIDEO_PATCH_PACK_UNPACK,
+                    OpBackend.PYTORCH_VIDEO_PATCH_PACK_UNPACK,
+                ],
                 "det_gemm": [OpBackend.TRITON_DET_GEMM],
                 "batch_invariant_logp": [
                     OpBackend.TRITON_BATCH_INVARIANT_LOGP,
@@ -680,6 +751,7 @@ class KernelRegistry:
                 ],
                 "ratio_kl": [OpBackend.TRITON_RATIO_KL, OpBackend.PYTORCH_RATIO_KL],
                 "pack": [OpBackend.PYTORCH_PACK],
+                "video_patch_pack_unpack": [OpBackend.PYTORCH_VIDEO_PATCH_PACK_UNPACK],
                 "det_gemm": [OpBackend.TRITON_DET_GEMM],
                 "batch_invariant_logp": [
                     OpBackend.TRITON_BATCH_INVARIANT_LOGP,
@@ -715,6 +787,7 @@ class KernelRegistry:
                 "linear_logp": [OpBackend.PYTORCH_LINEAR_LOGP],
                 "ratio_kl": [OpBackend.PYTORCH_RATIO_KL],
                 "pack": [OpBackend.PYTORCH_PACK],
+                "video_patch_pack_unpack": [OpBackend.PYTORCH_VIDEO_PATCH_PACK_UNPACK],
                 "batch_invariant_logp": [OpBackend.PYTORCH_BATCH_INVARIANT_LOGP],
                 "matmul": [OpBackend.PYTORCH_NATIVE_MATMUL],
                 "rms_norm": [OpBackend.PYTORCH_NATIVE_RMS_NORM],

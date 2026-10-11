@@ -4,6 +4,12 @@
 #include <torch/extension.h>
 #include <cuda_bf16.h>
 
+#if !defined(USE_ROCM) && !defined(KERNEL_ALIGN_WITH_ROCM)
+torch::Tensor video_patch_pack_unpack_cuda(
+    torch::Tensor input, int64_t batch, int64_t channels, int64_t frames,
+    int64_t height, int64_t width, bool unpack);
+#endif
+
 // Fused LogP Declarations
 torch::Tensor fused_logp_forward(torch::Tensor logits, torch::Tensor token_ids);
 #if !defined(USE_ROCM) && !defined(KERNEL_ALIGN_WITH_ROCM)
@@ -502,6 +508,10 @@ at::Tensor prefix_shared_attention(
 
 // PyBind11 Module Registration
 PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
+#if !defined(USE_ROCM) && !defined(KERNEL_ALIGN_WITH_ROCM)
+    m.def("video_patch_pack_unpack", &video_patch_pack_unpack_cuda,
+          "MiniMax-H3 video patch pack/unpack CUDA");
+#endif
     m.doc() = "RL-Kernel High-Performance Operator Extension Library";
 
     m.def("fused_logp", &fused_logp_forward, "Fused logp forward fallback");
