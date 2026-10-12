@@ -18,7 +18,7 @@ Consumers must review the proposed ordering before assuming this ABI.
 ## Interface
 
 ```python
-from rl_engine.kernels.registry import KernelRegistry
+from rl_engine.runtime.registry import KernelRegistry
 
 op = KernelRegistry().get_op("nemotron_router_dispatch", device=x.device)
 ids, weights, permutation, offsets, packed = op(x, w, bias)
@@ -96,7 +96,7 @@ the registry entry alone does not provide framework integration.
 ## Tests
 
 ```bash
-python -m pytest tests/test_kernel_registry.py tests/nemotron/ -q
+python -m pytest tests/runtime/test_kernel_registry.py tests/reference/test_nemotron_router_reference.py tests/backends/cuda/test_nemotron_router_cuda.py -q
 ```
 
 Tests cover an independent scalar FP64 reference, reference finite-difference
@@ -113,11 +113,14 @@ change selection; each provider's selected branch is qualified against FP64.
 
 Current source SHA256:
 `9ec652f622711d303b112787f3405751ddc7a5ed4f0281f74fb172f970605a46`.
-On one H20 with Torch 2.9.1+cu130 / Triton 3.5.1, 106 reference, registry,
-CUDA and consumer tests pass. All five outputs and dX/dW match the previous
-implementation bitwise in 36 direct cases through 65536 tokens. Compute
-Sanitizer 2025.3.1.0 passes all four tools on full/tail/capacity workloads.
-These records cover selected operator sources/tests, not full-repository GPU CI.
+On one H20 with Torch 2.9.1+cu130 / Triton 3.5.1, all 106 reference, registry,
+CUDA and consumer tests passed again under the canonical repository layout on
+2026-10-11, with no skips. Before the layout migration, the same operator source
+matched the previous implementation bitwise for all five outputs and dX/dW
+in 36 direct cases through 65536 tokens. Compute Sanitizer 2025.3.1.0 passed
+all four tools on full/tail/capacity workloads; these bitwise and sanitizer
+checks were not rerun during the layout replay. These records cover selected
+operator sources/tests, not full-repository GPU CI.
 
 ## Performance reproduction
 
@@ -130,7 +133,7 @@ communication are excluded from both providers.
 ```bash
 # Install optional TE only in an isolated CUDA environment.
 pip install 'transformer_engine[pytorch]==2.19.0'
-PYTHONPATH=. python benchmarks/benchmark_nemotron_router_training.py --map-type index --mode eager --dtype bf16 --output /tmp/router-te-bf16.json
+PYTHONPATH=. python benchmarks/operators/moe/benchmark_nemotron_router_training.py --map-type index --mode eager --dtype bf16 --output /tmp/router-te-bf16.json
 # Repeat with --dtype fp32 and --reverse, using new output paths.
 ```
 
@@ -143,24 +146,26 @@ disabled. The measured process excluded an unused incompatible optional FA4
 import; router/permutation code was unchanged. An isolated environment without
 FA4 avoids that import conflict.
 
-The current evidence snapshot, supplied separately with the PR as
-`nemotron-router-current-h20.json`, contains all 128 full-operator index/eager measurements: eight token counts
+The 2026-10-11 layout replay snapshot, retained separately for review as
+`nemotron-router-layout-h20.json`, contains all 128 full-operator index/eager measurements: eight token counts
 (1/16/128/513/1024/4096/8192/32768), both dtypes, random/concentrated routing,
 forward/forward+backward and both initial provider orders. Each measurement
 retains 20 alternating paired samples of five executions, medians, incremental
 peak allocation and FP64 qualification. It binds implementation/benchmark hashes
 and preserves regressions. Broader local qualification covered 512 measurements;
-only the current conservative full-operator matrix is included here.
+the layout replay reran 256 route/full measurements. Only the conservative
+full-operator matrix is summarized here; the pre-migration snapshot remains
+available separately.
 
 Full forward+backward on random inputs, in milliseconds. Latencies use the
 normal initial order; speedup ranges cover both initial orders:
 
 | Dtype | Tokens | Native ms | Strict ms | Native / strict |
 | --- | --- | --- | --- | --- |
-| bf16 | 8192 | 1.235402 | 1.141997 | 1.082-1.083x |
-| bf16 | 32768 | 4.603255 | 4.217085 | 1.090-1.092x |
-| fp32 | 8192 | 1.310125 | 1.293034 | 1.013-1.014x |
-| fp32 | 32768 | 4.878426 | 4.857485 | 1.004-1.005x |
+| bf16 | 8192 | 1.236691 | 1.138042 | 1.087-1.087x |
+| bf16 | 32768 | 4.602230 | 4.213184 | 1.091-1.092x |
+| fp32 | 8192 | 1.308269 | 1.290877 | 1.013-1.014x |
+| fp32 | 32768 | 4.883606 | 4.856144 | 1.001-1.006x |
 
 BF16 large-token training has an 8-9% speedup ratio; FP32's small difference is
 near parity and does not establish robust acceleration. Small-token regressions
