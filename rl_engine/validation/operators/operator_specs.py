@@ -281,13 +281,6 @@ OP_SPECS = {
             "pytorch": (
                 "rl_engine.reference.packing.video_patch_pack_unpack.NativeVideoPatchPackUnpackOp"
             ),
-            "cuda": (
-                "rl_engine.backends.cuda.packing.video_patch_pack_unpack.CudaVideoPatchPackUnpackOp"
-            ),
-            "triton": (
-                "rl_engine.backends.shared.triton.video_patch_pack_unpack."
-                "TritonVideoPatchPackUnpackOp"
-            ),
         },
         grad_input_names=("x",),
     ),
@@ -314,7 +307,16 @@ class GtestVideoPatchPackUnpackOp:
     def forward_fp32(
         self, x: torch.Tensor, shape: tuple[int, int, int, int, int], unpack: bool
     ) -> torch.Tensor:
-        return self(x.float(), shape, unpack)
+        from rl_engine.reference.packing.video_patch_pack_unpack import (
+            pack_video_patch_reference,
+            unpack_video_patch_reference,
+        )
+
+        return (
+            unpack_video_patch_reference(x.float(), shape)
+            if unpack
+            else pack_video_patch_reference(x.float())
+        )
 
 
 class GtestPackOp:

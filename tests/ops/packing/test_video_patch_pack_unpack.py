@@ -13,12 +13,8 @@ from rl_engine.reference.packing.video_patch_pack_unpack import (
     pack_video_patch_reference,
     unpack_video_patch_reference,
 )
-from rl_engine.runtime.registry import KernelRegistry, OpBackend
-from rl_engine.runtime.semantic_registry import (
-    OperatorInstantiationError,
-    OperatorRequirements,
-    OperatorResolutionError,
-)
+from rl_engine.runtime.registry import KernelRegistry
+from rl_engine.runtime.semantic_registry import OperatorRequirements, OperatorResolutionError
 from rl_engine.validation.operators.op_checks import run_operator_suite
 from rl_engine.validation.operators.operator_inputs import make_operator_inputs
 from rl_engine.validation.operators.operator_specs import make_candidate, make_operator_case
@@ -66,7 +62,7 @@ def _check_gtest(args, dtype, device):
 
 @pytest.mark.parametrize("direction", ("pack", "unpack"))
 @pytest.mark.parametrize("dtype", DTYPES)
-def test_public_gtest_reference_forward_and_backward(direction, dtype):
+def test_public_gtest_reused_forward_and_backward(direction, dtype):
     _check_gtest(_gtest_args(direction, "native"), dtype, "cpu")
 
 
@@ -128,7 +124,7 @@ def assert_bits(actual: torch.Tensor, expected: torch.Tensor) -> None:
 def test_coordinate_order_across_frames():
     shape = (1, 24, 2, 2, 4)
     x = torch.arange(torch.tensor(shape).prod().item(), dtype=torch.float32).reshape(shape)
-    packed = pack_video_patch_reference(x)
+    packed = NativeVideoPatchPackUnpackOp().pack(x)
     assert packed.shape == (1, 4, 96)
 
     # Check against source coordinates, not another pack/unpack round trip.
@@ -146,7 +142,7 @@ def test_coordinate_order_across_frames():
 
     # An independently constructed token input checks unpack's direction.
     tokens = torch.arange(4 * 96, dtype=torch.float32).reshape(1, 4, 96)
-    unpacked = unpack_video_patch_reference(tokens, shape)
+    unpacked = NativeVideoPatchPackUnpackOp().unpack(tokens, shape)
     for frame in range(2):
         for patch_col in range(2):
             for channel in range(24):
@@ -160,10 +156,10 @@ def test_coordinate_order_across_frames():
 
 @pytest.mark.parametrize("shape", SHAPES)
 @pytest.mark.parametrize("dtype", DTYPES)
-def test_reference_roundtrip_and_both_gradients(shape, dtype):
+def test_reused_roundtrip_and_both_gradients(shape, dtype):
     generator = torch.Generator().manual_seed(420)
     x = torch.randn(shape, generator=generator).to(dtype).requires_grad_()
-    packed = pack_video_patch_reference(x)
+    packed = NativeVideoPatchPackUnpackOp().pack(x)
     assert_bits(unpack_video_patch_reference(packed, shape), x)
 
     grad_tokens = torch.randn(packed.shape, generator=generator).to(dtype)
@@ -171,66 +167,81 @@ def test_reference_roundtrip_and_both_gradients(shape, dtype):
     assert_bits(dx, unpack_video_patch_reference(grad_tokens, shape))
 
     tokens = torch.randn(packed.shape, generator=generator).to(dtype).requires_grad_()
-    unpacked = unpack_video_patch_reference(tokens, shape)
+    unpacked = NativeVideoPatchPackUnpackOp().unpack(tokens, shape)
     grad_latents = torch.randn(shape, generator=generator).to(dtype)
     dtokens = torch.autograd.grad(unpacked, tokens, grad_latents)[0]
     assert_bits(dtokens, pack_video_patch_reference(grad_latents))
 
 
-def test_reference_batch_invariance():
+def test_reused_batch_invariance():
+    op = NativeVideoPatchPackUnpackOp()
     x = torch.arange(24 * 3 * 6 * 10, dtype=torch.float32).reshape(1, 24, 3, 6, 10)
-    alone = pack_video_patch_reference(x)
+    alone = op.pack(x)
     others = torch.full_like(x, -100)
-    assert_bits(pack_video_patch_reference(torch.cat([x, others]))[0], alone[0])
-    assert_bits(pack_video_patch_reference(torch.cat([others, x]))[1], alone[0])
+    assert_bits(op.pack(torch.cat([x, others]))[0], alone[0])
+    assert_bits(op.pack(torch.cat([others, x]))[1], alone[0])
 
 
 def test_invalid_inputs():
+    op = NativeVideoPatchPackUnpackOp()
     x = torch.empty((1, 24, 1, 2, 4))
     for bad in (torch.empty((0, 24, 1, 2, 4)), torch.empty((1, 24, 0, 2, 4))):
         with pytest.raises(ValueError, match="positive"):
-            pack_video_patch_reference(bad)
+            op.pack(bad)
     with pytest.raises(ValueError, match="24"):
-        pack_video_patch_reference(x[:, :23].contiguous())
+        op.pack(x[:, :23].contiguous())
     with pytest.raises(ValueError, match="divisible"):
-        pack_video_patch_reference(torch.empty((1, 24, 1, 3, 4)))
+        op.pack(torch.empty((1, 24, 1, 3, 4)))
     with pytest.raises(ValueError, match="contiguous"):
-        pack_video_patch_reference(x.transpose(-1, -2))
+        op.pack(x.transpose(-1, -2))
     with pytest.raises(TypeError, match="dtype"):
-        pack_video_patch_reference(x.to(torch.int32))
+        op.pack(x.to(torch.int32))
     with pytest.raises(ValueError, match="shape"):
-        unpack_video_patch_reference(torch.empty((1, 3, 96)), tuple(x.shape))
+        op.unpack(torch.empty((1, 3, 96)), tuple(x.shape))
     with pytest.raises(ValueError, match="shape"):
-        unpack_video_patch_reference(torch.empty((1, 2, 96)), (1, 24, 1, 2))
+        op.unpack(torch.empty((1, 2, 96)), (1, 24, 1, 2))
     with pytest.raises(TypeError, match="integers"):
-        unpack_video_patch_reference(torch.empty((1, 2, 96)), (1, 24, 1.0, 2, 4))
+        op.unpack(torch.empty((1, 2, 96)), (1, 24, 1.0, 2, 4))
     with pytest.raises(ValueError, match="contiguous"):
-        unpack_video_patch_reference(torch.empty((1, 96, 2)).transpose(1, 2), tuple(x.shape))
+        op.unpack(torch.empty((1, 96, 2)).transpose(1, 2), tuple(x.shape))
 
 
-def test_cpu_registry_is_reference():
+@pytest.mark.parametrize("device", ("cpu", "cuda"))
+def test_registry_uses_reused_pytorch(device):
     registry = KernelRegistry()
-    op = registry.get_op("video_patch_pack_unpack", device="cpu")
+    op = registry.get_op("video_patch_pack_unpack", device=device)
     assert isinstance(op, NativeVideoPatchPackUnpackOp)
     assert op.backend_id == "pytorch-video-patch-pack-unpack-v1"
-    assert registry.get_op("video_patch_pack_unpack", device="cpu") is op
+    assert registry.get_op("video_patch_pack_unpack", device=device) is op
 
 
-def test_gpu_registry_falls_back_to_reference(monkeypatch):
+def test_rocm_registry_uses_reused_pytorch(monkeypatch):
     registry = KernelRegistry()
-    load_backend = registry._get_or_create_backend
-
-    def load_without_triton(backend):
-        if backend in (
-            OpBackend.CUDA_VIDEO_PATCH_PACK_UNPACK,
-            OpBackend.TRITON_VIDEO_PATCH_PACK_UNPACK,
-        ):
-            return None
-        return load_backend(backend)
-
-    monkeypatch.setattr(registry, "_get_or_create_backend", load_without_triton)
+    # ROCm uses torch.device("cuda"); this checks selection, not AMD execution.
+    monkeypatch.setattr(torch.version, "hip", "test")
     op = registry.get_op("video_patch_pack_unpack", device="cuda")
     assert isinstance(op, NativeVideoPatchPackUnpackOp)
+
+
+@pytest.mark.parametrize("direction", ("pack", "unpack"))
+def test_public_gold_is_independent_of_reused_candidate(monkeypatch, direction):
+    from rl_engine.reference.packing import video_patch_pack_unpack as module
+
+    def broken_upstream(*args, **kwargs):
+        raise RuntimeError("Injected upstream failure")
+
+    monkeypatch.setattr(module, "minimax_h3_patchify_video_latent", broken_upstream)
+    monkeypatch.setattr(module, "minimax_h3_unpatchify_video_tokens", broken_upstream)
+    args = _gtest_args(direction, "pytorch")
+    case = make_operator_case(args, torch.float32, torch.device("cpu"))
+    expected = (
+        unpack_video_patch_reference(case.inputs["x"], case.inputs["shape"])
+        if direction == "unpack"
+        else pack_video_patch_reference(case.inputs["x"])
+    )
+    assert_bits(case.gold_fn(**case.inputs), expected)
+    with pytest.raises(RuntimeError, match="Injected upstream failure"):
+        make_candidate(args).fn(**case.inputs)
 
 
 def resolve_backend(session, backend, device="cpu", dtype="float32", **overrides):
@@ -267,19 +278,12 @@ def test_strict_reference_executes_registered_implementation():
     assert resolution.strict and resolution.trace.fallback_attempts == ()
 
 
-def test_strict_cuda_missing_extension_fails_without_fallback(monkeypatch):
-    from rl_engine.backends.cuda.packing import video_patch_pack_unpack as cuda_module
-
-    monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
-    monkeypatch.setattr(torch.version, "hip", None)
-    monkeypatch.setattr(cuda_module, "_C", None)
-    monkeypatch.setattr(cuda_module, "_EXT_AVAILABLE", False)
+@pytest.mark.parametrize("backend", ("cuda", "triton"))
+def test_strict_retired_backend_is_not_registered(backend):
     session = KernelRegistry().semantic.session()
-    resolution = resolve_backend(session, "cuda", device="cuda")
-    with pytest.raises(OperatorInstantiationError, match="Rebuild"):
-        session.instantiate(resolution)
-    assert resolution.trace.concrete_backend == "cuda-video-patch-pack-unpack-v1"
-    assert resolution.trace.fallback_attempts == ()
+    with pytest.raises(OperatorResolutionError) as error:
+        resolve_backend(session, backend, device="cuda")
+    assert error.value.trace.fallback_attempts == ()
 
 
 @pytest.mark.parametrize(
@@ -296,7 +300,7 @@ def test_strict_cuda_missing_extension_fails_without_fallback(monkeypatch):
 def test_strict_dispatch_rejects_unsupported_contract(changes):
     session = KernelRegistry().semantic.session()
     with pytest.raises(OperatorResolutionError) as error:
-        resolve_backend(session, "cuda", **{"device": "cuda", **changes})
+        resolve_backend(session, "pytorch", **{"device": "cuda", **changes})
     assert error.value.trace.fallback_attempts == ()
 
 
@@ -306,83 +310,42 @@ def test_strict_unknown_backend_does_not_choose_reference():
         resolve_backend(session, "missing")
 
 
-def test_gpu_registry_prefers_cuda_when_available():
-    if not torch.cuda.is_available():
+@pytest.fixture(params=("cpu", "cuda"))
+def reused_op(request):
+    device = request.param
+    if device == "cuda" and (not torch.cuda.is_available() or torch.version.hip is not None):
         pytest.skip("NVIDIA CUDA GPU required")
-    if torch.version.hip is not None:
-        pytest.skip("CUDA extension is NVIDIA-only")
-    from rl_engine.backends.extension import _C
-
-    if _C is None or not hasattr(_C, "video_patch_pack_unpack"):
-        pytest.skip("CUDA video patch extension is not built")
-    from rl_engine.backends.cuda.packing.video_patch_pack_unpack import CudaVideoPatchPackUnpackOp
-
-    op = KernelRegistry().get_op("video_patch_pack_unpack", device="cuda")
-    assert isinstance(op, CudaVideoPatchPackUnpackOp)
-
-
-def test_gpu_registry_uses_triton_without_cuda_extension(monkeypatch):
-    if not torch.cuda.is_available():
-        pytest.skip("CUDA/ROCm GPU required")
-    pytest.importorskip("triton")
-    from rl_engine.backends.shared.triton.video_patch_pack_unpack import (
-        TritonVideoPatchPackUnpackOp,
-    )
-
-    registry = KernelRegistry()
-    load_backend = registry._get_or_create_backend
-
-    def load_without_cuda(backend):
-        if backend is OpBackend.CUDA_VIDEO_PATCH_PACK_UNPACK:
-            return None
-        return load_backend(backend)
-
-    monkeypatch.setattr(registry, "_get_or_create_backend", load_without_cuda)
-    op = registry.get_op("video_patch_pack_unpack", device="cuda")
-    assert isinstance(op, TritonVideoPatchPackUnpackOp)
-
-
-@pytest.fixture(params=("triton", "cuda"))
-def gpu_op(request):
-    if not torch.cuda.is_available():
-        pytest.skip("CUDA/ROCm GPU required")
-    if request.param == "cuda":
-        if torch.version.hip is not None:
-            pytest.skip("CUDA extension is NVIDIA-only")
-        from rl_engine.backends.extension import _C
-
-        if _C is None or not hasattr(_C, "video_patch_pack_unpack"):
-            pytest.skip("CUDA video patch extension is not built")
-        from rl_engine.backends.cuda.packing.video_patch_pack_unpack import (
-            CudaVideoPatchPackUnpackOp,
-        )
-
-        session = KernelRegistry().semantic.session()
-        resolution = resolve_backend(session, "cuda", device="cuda")
-        op = session.instantiate(resolution)
-        assert isinstance(op, CudaVideoPatchPackUnpackOp)
-        assert session.instance_provenance(resolution, op).backend_id == op.backend_id
-        return op
-    pytest.importorskip("triton")
-    from rl_engine.backends.shared.triton.video_patch_pack_unpack import (
-        TritonVideoPatchPackUnpackOp,
-    )
-
-    if torch.version.hip is not None:
-        # ROCm implementation remains available for experimental validation;
-        # its strict capability is not claimed before an AMD hardware run.
-        return TritonVideoPatchPackUnpackOp()
     session = KernelRegistry().semantic.session()
-    resolution = resolve_backend(session, "triton", device="cuda")
+    resolution = resolve_backend(session, "pytorch", device=device)
     op = session.instantiate(resolution)
-    assert isinstance(op, TritonVideoPatchPackUnpackOp)
+    assert isinstance(op, NativeVideoPatchPackUnpackOp)
+    assert session.instance_provenance(resolution, op).backend_id == op.backend_id
+    return op, device
+
+
+@pytest.fixture
+def gpu_op():
+    if not torch.cuda.is_available() or torch.version.hip is not None:
+        pytest.skip("NVIDIA CUDA GPU required")
+    session = KernelRegistry().semantic.session()
+    resolution = resolve_backend(session, "pytorch", device="cuda")
+    op = session.instantiate(resolution)
+    assert isinstance(op, NativeVideoPatchPackUnpackOp)
     assert session.instance_provenance(resolution, op).backend_id == op.backend_id
     return op
 
 
+def test_gpu_registry_executes_reused_pytorch(gpu_op):
+    op = KernelRegistry().get_op("video_patch_pack_unpack", device="cuda")
+    assert type(op) is type(gpu_op)
+    x = torch.randn((1, 24, 3, 6, 10), device="cuda")
+    assert op.pack(x).device == x.device
+    assert_bits(op.pack(x), pack_video_patch_reference(x))
+
+
 @pytest.mark.parametrize("shape", SHAPES)
 @pytest.mark.parametrize("dtype", DTYPES)
-def test_gpu_backends_match_independent_reference(gpu_op, shape, dtype):
+def test_gpu_reuse_matches_independent_reference(gpu_op, shape, dtype):
     generator = torch.Generator().manual_seed(420)
     cpu_x = torch.randn(shape, generator=generator).to(dtype).requires_grad_()
     gpu_x = cpu_x.detach().to("cuda").requires_grad_()
@@ -412,23 +375,13 @@ def test_gpu_backends_match_independent_reference(gpu_op, shape, dtype):
 
 @pytest.mark.parametrize("width", (30, 32, 34, 62, 64, 66))
 @pytest.mark.parametrize("dtype", DTYPES)
-def test_cuda_tile_boundaries(width, dtype):
-    """Check full and partial tiles on both sides of 16/32 patch columns."""
-    if not torch.cuda.is_available() or torch.version.hip is not None:
-        pytest.skip("NVIDIA CUDA GPU required")
-    from rl_engine.backends.extension import _C
-
-    if _C is None or not hasattr(_C, "video_patch_pack_unpack"):
-        pytest.skip("CUDA video patch extension is not built")
-    from rl_engine.backends.cuda.packing.video_patch_pack_unpack import CudaVideoPatchPackUnpackOp
-
-    test_gpu_backends_match_independent_reference(
-        CudaVideoPatchPackUnpackOp(), (2, 24, 3, 6, width), dtype
-    )
+def test_gpu_irregular_patch_columns(gpu_op, width, dtype):
+    test_gpu_reuse_matches_independent_reference(gpu_op, (2, 24, 3, 6, width), dtype)
 
 
 @pytest.mark.parametrize("dtype", DTYPES)
-def test_gpu_backends_preserve_special_bits(gpu_op, dtype):
+def test_reused_preserves_special_bits(reused_op, dtype):
+    op, device = reused_op
     patterns = {
         torch.float32: (
             0,
@@ -447,44 +400,45 @@ def test_gpu_backends_preserve_special_bits(gpu_op, dtype):
     bits = torch.uint32 if dtype == torch.float32 else torch.uint16
     repeated = torch.tensor(patterns[dtype], dtype=bits).repeat((count + 6) // 7)[:count]
     cpu_x = repeated.view(dtype).reshape(shape)
-    gpu_x = cpu_x.to("cuda")
-    assert_bits(gpu_op.pack(gpu_x), pack_video_patch_reference(cpu_x))
-    assert_bits(gpu_op.unpack(gpu_op.pack(gpu_x), shape), cpu_x)
+    gpu_x = cpu_x.to(device)
+    assert_bits(op.pack(gpu_x), pack_video_patch_reference(cpu_x))
+    assert_bits(op.unpack(op.pack(gpu_x), shape), cpu_x)
 
     token_count = 2 * 6 * 96
     token_bits = torch.tensor(patterns[dtype], dtype=bits).repeat((token_count + 6) // 7)
     cpu_tokens = token_bits[:token_count].view(dtype).reshape(2, 6, 96)
     assert_bits(
-        gpu_op.unpack(cpu_tokens.to("cuda"), shape),
+        op.unpack(cpu_tokens.to(device), shape),
         unpack_video_patch_reference(cpu_tokens, shape),
     )
 
 
-def test_gpu_backends_noncontiguous_grad_and_higher_order(gpu_op):
+def test_reused_noncontiguous_grad_and_higher_order(reused_op):
+    op, device = reused_op
     shape = (2, 24, 3, 6, 10)
-    x = torch.randn(shape, device="cuda", requires_grad=True)
-    packed = gpu_op.pack(x)
-    grad_tokens = torch.randn(2, 96, packed.shape[1], device="cuda").transpose(1, 2)
+    x = torch.randn(shape, device=device, requires_grad=True)
+    packed = op.pack(x)
+    grad_tokens = torch.randn(2, 96, packed.shape[1], device=device).transpose(1, 2)
     grad_tokens.requires_grad_()
     dx = torch.autograd.grad(packed, x, grad_tokens, create_graph=True)[0]
     assert_bits(dx, unpack_video_patch_reference(grad_tokens.contiguous(), shape))
     probe = torch.randn_like(x)
-    assert_bits(torch.autograd.grad(dx, grad_tokens, probe)[0], gpu_op.pack(probe))
+    assert_bits(torch.autograd.grad(dx, grad_tokens, probe)[0], op.pack(probe))
 
-    tokens = torch.randn(packed.shape, device="cuda", requires_grad=True)
-    unpacked = gpu_op.unpack(tokens, shape)
-    grad_latents = torch.randn((2, 24, 3, 10, 6), device="cuda").transpose(-1, -2)
+    tokens = torch.randn(packed.shape, device=device, requires_grad=True)
+    unpacked = op.unpack(tokens, shape)
+    grad_latents = torch.randn((2, 24, 3, 10, 6), device=device).transpose(-1, -2)
     grad_latents.requires_grad_()
     dtokens = torch.autograd.grad(unpacked, tokens, grad_latents, create_graph=True)[0]
     assert_bits(dtokens, pack_video_patch_reference(grad_latents.contiguous()))
     token_probe = torch.randn_like(tokens)
     assert_bits(
         torch.autograd.grad(dtokens, grad_latents, token_probe)[0],
-        gpu_op.unpack(token_probe, shape),
+        op.unpack(token_probe, shape),
     )
 
 
-def test_gpu_backends_batch_invariance_and_stream(gpu_op):
+def test_gpu_reuse_batch_invariance_and_stream(gpu_op):
     shape = (1, 24, 3, 6, 10)
     x = torch.randn(shape, device="cuda")
     other = torch.randn_like(x)
@@ -501,7 +455,7 @@ def test_gpu_backends_batch_invariance_and_stream(gpu_op):
     assert_bits(recovered, x)
 
 
-def test_gpu_backends_768p_layout(gpu_op):
+def test_gpu_reuse_768p_layout(gpu_op):
     # 768x1344 pixels at VAE spatial factor 16: latent H=48, W=84.
     shape = (1, 24, 32, 48, 84)
     cpu_x = torch.randn(shape, dtype=torch.bfloat16)
@@ -514,20 +468,21 @@ def test_gpu_backends_768p_layout(gpu_op):
 
 @pytest.mark.parametrize("direction", ("pack", "unpack"))
 @pytest.mark.parametrize("dtype", DTYPES)
-def test_gpu_output_and_gradient_invariance(gpu_op, direction, dtype):
+def test_reused_output_and_gradient_invariance(reused_op, direction, dtype):
     """Hold one logical row and its upstream gradient fixed across layouts."""
+    op, device = reused_op
     shape = (1, 24, 3, 6, 10)
     token_shape = (1, 45, 96)
     input_shape = shape if direction == "pack" else token_shape
     output_shape = token_shape if direction == "pack" else shape
-    generator = torch.Generator(device="cuda").manual_seed(420)
+    generator = torch.Generator(device=device).manual_seed(420)
 
     def random(size):
-        return torch.randn(size, generator=generator, device="cuda", dtype=dtype)
+        return torch.randn(size, generator=generator, device=device, dtype=dtype)
 
     def evaluate(values, grad, latent_shape):
         values = values.detach().requires_grad_()
-        output = gpu_op.pack(values) if direction == "pack" else gpu_op.unpack(values, latent_shape)
+        output = op.pack(values) if direction == "pack" else op.unpack(values, latent_shape)
         dx = torch.autograd.grad(output, values, grad)[0]
         return output.detach(), dx.detach()
 

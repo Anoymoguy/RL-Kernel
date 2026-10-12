@@ -55,30 +55,12 @@ def diffusers_op():
     return _BENCHMARK.DiffusersVideoPatch()
 
 
-@pytest.fixture(params=("pytorch", "triton", "cuda"))
+@pytest.fixture(params=("cpu", "cuda"))
 def op(request):
-    if request.param == "pytorch":
-        return NativeVideoPatchPackUnpackOp(), "cpu"
-
-    if not torch.cuda.is_available():
-        pytest.skip("CUDA/ROCm GPU required for explicit Diffusers backend test")
-    if request.param == "triton":
-        pytest.importorskip("triton")
-        from rl_engine.backends.shared.triton.video_patch_pack_unpack import (
-            TritonVideoPatchPackUnpackOp,
-        )
-
-        return TritonVideoPatchPackUnpackOp(), "cuda"
-
-    if torch.version.hip is not None:
-        pytest.skip("CUDA extension requires an NVIDIA GPU")
-    from rl_engine.backends.extension import _C
-
-    if _C is None or not hasattr(_C, "video_patch_pack_unpack"):
-        pytest.skip("CUDA video patch extension is not built")
-    from rl_engine.backends.cuda.packing.video_patch_pack_unpack import CudaVideoPatchPackUnpackOp
-
-    return CudaVideoPatchPackUnpackOp(), "cuda"
+    device = request.param
+    if device == "cuda" and (not torch.cuda.is_available() or torch.version.hip is not None):
+        pytest.skip("NVIDIA CUDA GPU required for explicit Diffusers comparison")
+    return NativeVideoPatchPackUnpackOp(), device
 
 
 @pytest.mark.parametrize("shape", SHAPES)

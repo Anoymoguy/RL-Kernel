@@ -2,15 +2,6 @@
 # This file is a type stub for the compiled C++ extension module.
 import torch
 
-def video_patch_pack_unpack(
-    input: torch.Tensor,
-    batch: int,
-    channels: int,
-    frames: int,
-    height: int,
-    width: int,
-    unpack: bool,
-) -> torch.Tensor: ...
 def deterministic_collective_ipc_meta(
     tensor: torch.Tensor,
 ) -> tuple[list[int], int]: ...

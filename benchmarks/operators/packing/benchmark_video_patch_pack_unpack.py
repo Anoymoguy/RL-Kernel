@@ -29,7 +29,13 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 from rl_engine.reference.packing.video_patch_pack_unpack import (  # noqa: E402
-    NativeVideoPatchPackUnpackOp,
+    UPSTREAM_REVISION,
+    UPSTREAM_SOURCE,
+    UPSTREAM_SOURCE_SHA256,
+    minimax_h3_patchify_video_latent,
+    minimax_h3_unpatchify_video_tokens,
+    pack_video_patch_reference,
+    unpack_video_patch_reference,
 )
 from rl_engine.runtime.registry import KernelRegistry  # noqa: E402
 from rl_engine.runtime.semantic_registry import OperatorRequirements  # noqa: E402
@@ -123,6 +129,27 @@ class DiffusersVideoPatch:
         return self._unpack(self.components, state)
 
 
+class VllmOmniVideoPatch:
+    """Call the pinned vendored functions directly, without RL-Kernel validation."""
+
+    backend_id = "vllm_omni_b1fc5fc_video_tensor_body"
+    provenance = {
+        "revision": UPSTREAM_REVISION,
+        "source": UPSTREAM_SOURCE,
+        "file_sha256": UPSTREAM_SOURCE_SHA256,
+        "scope": "unchanged vendored video functions with batch views",
+    }
+
+    def pack(self, x):
+        return minimax_h3_patchify_video_latent(x, patch_size=(1, 2, 2)).view(x.shape[0], -1, 96)
+
+    def unpack(self, tokens, shape):
+        _, c, t, h, w = shape
+        return minimax_h3_unpatchify_video_tokens(
+            tokens.view(-1, 96), latent_shape=(t, h // 2, w // 2, c), patch_size=(1, 2, 2)
+        )
+
+
 SHAPES = {"small": (3, 6, 10), "medium": (8, 24, 42), "768p": (32, 48, 84)}
 # Diffusers 0.40.0 uses spatial compression by 16. Aligned video frame counts
 # F=17n+5 produce latent T=5n+2 through the VAE. Keep the measured shapes here
@@ -154,18 +181,17 @@ OPERATIONS = tuple(
     for direction in ("pack", "unpack")
     for scope in ("forward", "backward", "forward_backward")
 )
-BACKENDS = ("cuda", "triton", "pytorch", "diffusers")
+BACKENDS = ("pytorch", "vllm_omni", "diffusers")
 KERNEL_IDS = {
     "diffusers": "upstream.reshape_permute_contiguous",
-    "cuda": "video_patch_permute",
-    "triton": "_copy_patch",
-    "pytorch": "torch.reshape_permute",
+    "vllm_omni": "vllm_omni.reshape_einsum_contiguous",
+    "pytorch": "rlkernel.vllm_omni_adapter",
 }
 
 
 def _operator(name, dtype):
-    if name == "diffusers":
-        op = DiffusersVideoPatch()
+    if name in ("diffusers", "vllm_omni"):
+        op = DiffusersVideoPatch() if name == "diffusers" else VllmOmniVideoPatch()
         return op, {
             "requested_backend": op.backend_id,
             "actual_backend": op.backend_id,
@@ -216,14 +242,6 @@ def _environment():
         )
     except (OSError, subprocess.CalledProcessError, IndexError):
         driver = "unknown"
-    import triton
-
-    from rl_engine.backends.extension import _C
-
-    if _C is None or not getattr(_C, "__file__", None):
-        raise RuntimeError("Loaded CUDA extension has no observable binary path")
-    extension_path = Path(_C.__file__).resolve()
-
     properties = torch.cuda.get_device_properties(0)
     return {
         "timestamp_utc": datetime.now(timezone.utc).isoformat(),
@@ -233,16 +251,10 @@ def _environment():
         "upstream_adapter_sha256": hashlib.sha256(
             inspect.getsource(DiffusersVideoPatch).encode()
         ).hexdigest(),
-        "extension_path": str(extension_path),
-        "extension_sha256": {
-            extension_path.name: hashlib.sha256(extension_path.read_bytes()).hexdigest()
-        },
+        "reused_upstream": VllmOmniVideoPatch.provenance,
         "source_sha256": {
             name: hashlib.sha256((REPO_ROOT / name).read_bytes()).hexdigest()
             for name in (
-                "csrc/cuda/packing/video_patch_pack_unpack.cu",
-                "rl_engine/backends/cuda/packing/video_patch_pack_unpack.py",
-                "rl_engine/backends/shared/triton/video_patch_pack_unpack.py",
                 "rl_engine/reference/packing/video_patch_pack_unpack.py",
                 "rl_engine/runtime/registry.py",
             )
@@ -254,7 +266,6 @@ def _environment():
         "driver": driver,
         "torch": torch.__version__,
         "cuda": torch.version.cuda,
-        "triton": triton.__version__,
         "python": sys.version.split()[0],
         "image": os.environ.get("RLK_BENCH_IMAGE", "unknown"),
     }
@@ -373,14 +384,13 @@ def _sample(functions, warmup, count, *, graph, graph_factory, expected, graph_c
 
 def _case(shape, dtype, warmup, samples, graph, graph_calls):
     x = torch.randn(shape, device="cuda", dtype=dtype).requires_grad_()
-    reference = NativeVideoPatchPackUnpackOp()
-    expected_tokens = reference.pack(x)
+    expected_tokens = pack_video_patch_reference(x)
     tokens = torch.randn(expected_tokens.shape, device="cuda", dtype=dtype).requires_grad_()
     grad_tokens = torch.randn_like(tokens)
     grad_latents = torch.randn_like(x)
-    expected_unpack = reference.unpack(tokens, shape)
-    expected_pack_grad = reference.unpack(grad_tokens, shape)
-    expected_unpack_grad = reference.pack(grad_latents)
+    expected_unpack = unpack_video_patch_reference(tokens, shape)
+    expected_pack_grad = unpack_video_patch_reference(grad_tokens, shape)
+    expected_unpack_grad = pack_video_patch_reference(grad_latents)
     selections = {name: _operator(name, dtype) for name in BACKENDS}
     operators = {name: selection[0] for name, selection in selections.items()}
     for name, op in operators.items():
@@ -458,6 +468,7 @@ def _case(shape, dtype, warmup, samples, graph, graph_calls):
                     "requested_backend": name,
                     "actual_backend": operators[name].backend_id,
                     "kernel_id": KERNEL_IDS[name],
+                    "device": str(x.device),
                     "status": "pass",
                     "bitwise_mismatch_count": 0,
                     **memory[name],
@@ -509,10 +520,10 @@ def main():
     args.output_dir.mkdir(parents=True, exist_ok=True)
     output = args.output_dir / "results.json"
     result = {
-        "schema_version": "rlkernel.video_patch_pack_unpack.benchmark.v4",
+        "schema_version": "rlkernel.video_patch_pack_unpack.benchmark.v5",
         "command": shlex.join([sys.executable, *sys.argv]),
         "comparison_contract": {
-            "baseline": "Diffusers 0.40.0 upstream tensor operations",
+            "baseline": "pinned vLLM-Omni video functions; Diffusers 0.40.0 second baseline",
             "accuracy_reference": "independent RL-Kernel PyTorch reference and upstream Diffusers",
             "scope": "single-GPU operator-only; no model checkpoint or VAE",
             "correctness": "bitwise forward output and first-order gradient equality",
@@ -535,7 +546,7 @@ def main():
             ),
             "forward": "no_grad forward only",
             "forward_backward": "forward + autograd.grad; no accumulated .grad",
-            "backend_order": "balanced 24-permutation cycle per operation",
+            "backend_order": "balanced 6-permutation cycle per operation",
             "eager_event": "CUDA-event device-stream interval for one Python call",
             "eager_wall": "synchronized host wall time for one Python call",
             "cuda_graph": (
