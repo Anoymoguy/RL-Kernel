@@ -121,13 +121,13 @@ python tools/validation/operators/check_operator.py --op rms_norm_gated --candid
 
 ## Evidence
 
-![gated RMSNorm vs existing implementations on B200](../usage/evidence/qwen3-next-rms-norm-gated-b200/figure-gated_rmsnorm.png)
+![gated RMSNorm vs existing implementations on B200](https://raw.githubusercontent.com/fusheng-ji/RL-Kernel/6d6193d94a83266d5f5f62bb9d90fb3215716ee3/pr468/docs/usage/evidence/qwen3-next-rms-norm-gated-b200/figure-gated_rmsnorm.png)
 
-[`report.json`](../usage/evidence/qwen3-next-rms-norm-gated-b200/report.json) was written by
+[`report.json`](https://github.com/fusheng-ji/RL-Kernel/blob/6d6193d94a83266d5f5f62bb9d90fb3215716ee3/pr468/docs/usage/evidence/qwen3-next-rms-norm-gated-b200/report.json) was written by
 `tools/validation/models/qwen3_next_norm_evidence.py` from a clean tree at `822b085`, on an otherwise idle
 B200 (torch 2.13.0+cu130, transformers 5.17.0, vLLM 0.30.0). Head dim 128, BF16; the FP64
 golden uses vLLM's convention. The same report re-measures the zero-centred op
-([figure](../usage/evidence/qwen3-next-rms-norm-gated-b200/figure-zero_centred_rmsnorm.png)).
+([figure](https://raw.githubusercontent.com/fusheng-ji/RL-Kernel/6d6193d94a83266d5f5f62bb9d90fb3215716ee3/pr468/docs/usage/evidence/qwen3-next-rms-norm-gated-b200/figure-zero_centred_rmsnorm.png)).
 
 | | rl-kernel CUDA | PyTorch reference | transformers (cast-first) | vLLM `RMSNormGated`* |
 |---|---|---|---|---|
@@ -149,7 +149,7 @@ golden uses vLLM's convention. The same report re-measures the zero-centred op
 
 ## Existing implementations: measured batch invariance, accuracy, gates
 
-![rms_norm_gated vs existing implementations](../usage/evidence/qwen3-next-norm-reuse-b200/rms_norm_gated.png)
+![rms_norm_gated vs existing implementations](https://raw.githubusercontent.com/fusheng-ji/RL-Kernel/6d6193d94a83266d5f5f62bb9d90fb3215716ee3/pr468/docs/usage/evidence/qwen3-next-norm-reuse-b200/rms_norm_gated.png)
 
 | Implementation | Batch-invariance checks | Forward correctly rounded | Worst grad err | Forward / fwd+bwd | C3/C4 gates |
 |---|---|---|---|---|---|
@@ -172,7 +172,7 @@ A "no" counts the rows, sub-batches or sweep cases that differed. Accuracy is ag
 idle B200. The C3/C4 column runs this repository's own gate scripts unchanged, with the CUDA
 candidate replaced by a subclass of this op whose forward and backward call the other library.
 The subclass keeps this op's FP32 `dweight` row contributions, so singleton-aggregate compares
-like with like.  [`rms_norm_gated.json`](../usage/evidence/qwen3-next-norm-reuse-b200/rms_norm_gated.json)
+like with like.  [`rms_norm_gated.json`](https://github.com/fusheng-ji/RL-Kernel/blob/6d6193d94a83266d5f5f62bb9d90fb3215716ee3/pr468/docs/usage/evidence/qwen3-next-norm-reuse-b200/rms_norm_gated.json)
 was written from a clean tree at `abb56c2` by
 
 ```bash
