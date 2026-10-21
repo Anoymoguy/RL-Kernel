@@ -10,7 +10,7 @@ Install `reportlab`, `pymupdf` and `Pillow`, then run `python render.py`. It wri
 
 | File | Figure |
 | --- | --- |
-| architecture.png | Model, operator and engine integration |
+| architecture.png | New and extended RL-Kernel code, including verl integration |
 | dispatcher.png | Hardware-aware kernel selection |
 | speculative.png | Shared speculative-decoding interfaces |
 | pd-consistency.png | Prefill/Decode handoff and training comparison |
@@ -18,3 +18,5 @@ Install `reportlab`, `pymupdf` and `Pillow`, then run `python render.py`. It wri
 | pd-combine.png | Fixed-slot MoE combine and FP32 reduction tree |
 
 The top-k of eight and the device/expert counts are illustrative. Detailed assumptions and validation requirements remain in the issue body.
+
+The architecture diagram follows PR #497. It uses the vime integration present in v0.1.0 as a reference: training initialization and logprob-provider hooks, plus the vLLM rollout plugin. The vime-to-verl dotted arrow denotes reuse of the integration approach, not a runtime dependency. Proposed common-code extraction is described in the issue.
