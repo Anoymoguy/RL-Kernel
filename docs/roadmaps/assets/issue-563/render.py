@@ -147,31 +147,60 @@ def speculative(f):
     f.label(147,307,'Connect through the adapter',18)
     f.label(975,637,'Shared by CUDA / ROCm / Ascend',16)
 
+def pd_contract_figure(f, lang='cn'):
+    cn = lang == 'cn'
+    def t(a,b): return a if cn else b
+    c=f.c
+    c.setStrokeColor(colors.HexColor('#A5ADB5')); c.setLineWidth(1.2)
+    for x,y1,y2 in [(140,84,610),(805,84,624),(1070,84,205),(1070,477,535)]:
+        c.line(x,660-y1,x,660-y2)
+    f.node(22,20,236,64,['Prefill',t('固定权重版本','Pin the weight version')])
+    f.node(670,20,270,64,['Decode',t('使用同一版权重','Use the same weights')])
+    f.node(956,20,228,64,['Training',t('使用该 rollout 的权重','Use the rollout checkpoint')])
+    f.arrow([(140,116),(805,116)],label=t('请求、状态规格、契约 ID / hash','Request, state format, contract ID / hash'),at=(470,99))
+    f.node(670,139,270,56,[t('分配接收缓冲','Allocate receive buffers')],True)
+    f.arrow([(805,211),(140,211)],label=t('接收端就绪','Receiver ready'),at=(466,193))
+    f.group(310,237,337,89,t('L1 框架层契约','L1 Framework contract'))
+    for y,a,b in [
+        (260,'权重 / 模型 / tokens','Weights / model / tokens'),
+        (285,'位置 / mask / RoPE','Positions / mask / RoPE'),
+        (310,'有效前缀 / 状态覆盖长度','Valid prefix / state coverage')]:
+        f.label(478,y,t(a,b),size=18)
+    f.node(22,270,236,67,[t('计算前缀','Compute the prefix'),'Attention / MoE'])
+    f.arrow([(140,358),(805,358)],blue=True,label=t('KV / 混合状态 + 交接元数据','KV / hybrid state + handoff metadata'),at=(472,339))
+    f.label(472,382,t('交接元数据包含契约 ID / hash','Handoff metadata includes contract ID / hash'),size=17,color=BLUE)
+    f.group(310,418,337,153,t('L2 算子层契约','L2 Operator contract'))
+    for y,a,b in [
+        (443,'Attention：LSE / 输出合并','Attention: LSE / output merge'),
+        (470,'GEMM：分块 / 累加 / Split-K','GEMM: tiling / accumulation / Split-K'),
+        (497,'MoE：路由 / dispatch / combine','MoE: router / dispatch / combine'),
+        (524,'Norm / logprob：规约 / 舍入','Norm / logprob: reduction / rounding'),
+        (551,'量化（如启用）：scale / 量化位置','Quantization, if used: scales / boundaries')]:
+        f.label(478,y,t(a,b),size=17 if cn else 16)
+    f.node(670,421,270,100,[
+        (t('核对权重、前缀与契约','Check weights, prefix and contracts'),21,False),
+        (t('L1 / L2 检查','Check L1 / L2'),18,False),
+        (t('确认所需状态已收齐','Confirm required state is complete'),17,False)],True)
+    f.node(22,544,250,66,[
+        (t('检查失败：报错','On failure: report the error'),21,False),
+        (t('或按匹配契约重算前缀','or recompute under matching contracts'),16,False)])
+    f.arrow([(670,478),(658,478),(658,588),(272,588)],blue=True,dash=True)
+    f.node(670,559,270,64,['Decode / Verify',t('继续生成，记录 logprob','Generate; record target logprobs')])
+    f.arrow([(805,521),(805,559)],label=t('检查通过','Valid'),at=(866,540))
+    f.group(964,220,216,243,t('训练对照','Training comparison'))
+    for y,a,b in [
+        (258,'同一权重 / tokens','Same weights / tokens'),
+        (307,'相同位置 / mask','Same positions / mask'),
+        (356,'相同 L1 / L2 规则','Same L1 / L2 rules'),
+        (405,'相同 logprob 定义','Same logprob definition')]:
+        f.label(1072,y,t(a,b),size=16)
+    f.node(956,535,228,79,[t('独立重算并逐层比较','Recompute; compare layers'),t('目标 logprob / MoE 结果','Target logprobs / MoE outputs')],True)
+    f.arrow([(805,623),(805,646),(1070,646),(1070,614)],blue=True,dash=True,label='tokens / logprob',at=(938,646))
+    f.label(309,643,t('状态收齐、契约通过后，才执行 Decode','Decode starts only after state and contract checks pass'),size=17 if cn else 16)
+
+
 def pd_consistency(f):
-    # Lifelines are drawn first so the action boxes cover them cleanly.
-    c=f.c;c.setStrokeColor(colors.HexColor('#A5ADB5'));c.setLineWidth(1.2)
-    c.line(190,660-86,190,660-574)
-    c.line(720,660-86,720,660-631)
-    c.line(1057,660-86,1057,660-230)
-    c.line(1057,660-444,1057,660-565)
-    f.node(50,20,280,64,['Prefill','Pin the weight version'])
-    f.node(575,20,290,64,['Decode','Use the same weights'])
-    f.node(942,20,230,64,['Training','Use the rollout checkpoint'])
-    f.arrow([(190,122),(720,122)],label='Request, versions and KV format',at=(455,104))
-    f.node(580,148,280,56,['Allocate receive buffers'],True)
-    f.arrow([(720,230),(190,230)],label='Receiver ready',at=(455,212))
-    f.node(46,260,288, 62,['Compute the prefix','Attention / MoE'])
-    f.arrow([(190,353),(720,353)],blue=True,label='KV / hybrid state + metadata',at=(455,334))
-    f.node(565,381,310, 80,['Validate versions and prefix','Confirm required state has arrived'],True)
-    f.node(28,497,350, 62,['On failure: report or recompute the prefix'])
-    f.arrow([(565,421),(467,421),(467,528),(378,528)],blue=True,dash=True)
-    f.node(575,507,290, 62,['Decode / Verify','Continue generation; record logprobs'])
-    f.arrow([(720,461),(720,507)],label='Valid',at=(786,483))
-    f.group(935,249,245,190,'Training comparison')
-    for y,t in [(285,'Same weight version'),(326,'Same tokens / positions / mask'),(367,'Same logprob definition')]:f.label(1057,y,t,16)
-    f.node(940,565,237, 77,['Recompute; compare layers','Target logprobs / MoE outputs'],True)
-    f.arrow([(720,569),(720,603),(940,603)],blue=True,dash=True,label='tokens / logprob',at=(830,583))
-    f.label(265,606,'Generation waits for the full input state',17)
+    pd_contract_figure(f, 'en')
 
 def pd_topology(f):
     f.group(20,25,1160,230,'1P1D: one Prefill node and one Decode node (example)')
@@ -179,7 +208,7 @@ def pd_topology(f):
     f.node(713,72,431,141,['D: 4 NPUs / EP4','128 experts; 32 per rank','Expert 80 on rank 2'])
     f.arrow([(497,145),(713,145)],blue=True,label='State handoff',at=(605,120))
     f.label(605,177,'KV / hybrid state',size=16)
-    f.label(605,202,'+ metadata',size=16)
+    f.label(605,202,'Request / contract metadata',size=15)
     f.label(600,236,'Preserve logical expert IDs; validate top-k slots and numerical rules for the same input',19)
     f.group(20,305,1160,290,'Multi-node example: two Prefill nodes and four Decode nodes')
     f.label(257,345,'Prefill: EP16',23,True)
@@ -192,7 +221,7 @@ def pd_topology(f):
     f.node(968,384,194, 58,['D-node 1: 2 NPUs','rank 2-3'])
     f.node(745,473,194, 58,['D-node 2: 2 NPUs','rank 4-5'])
     f.node(968,473,194, 58,['D-node 3: 2 NPUs','rank 6-7'])
-    f.node(509,394,170,127,[('P to D',24,False),('KV / hybrid state',17,False),('Handoff metadata',17,False),('Target layout',17,False)],True)
+    f.node(509,394,170,127,[('P to D',24,False),('KV / hybrid state',17,False),('Request / contract metadata',15,False),('Target layout',17,False)],True)
     f.arrow([(448,458),(509,458)])
     f.arrow([(679,458),(732,458)])
     f.label(260,564,'Within P: EP dispatch / return',19)

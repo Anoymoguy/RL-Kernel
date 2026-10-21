@@ -20,3 +20,5 @@ Install `reportlab`, `pymupdf` and `Pillow`, then run `python render.py`. It wri
 The top-k of eight and the device/expert counts are illustrative. Detailed assumptions and validation requirements remain in the issue body.
 
 The architecture diagram follows PR #497. It uses the vime integration present in v0.1.0 as a reference: training initialization and logprob-provider hooks, plus the vLLM rollout plugin. The vime-to-verl dotted arrow denotes reuse of the integration approach, not a runtime dependency. Proposed common-code extraction is described in the issue.
+
+The P/D handoff diagram separates the L1 framework contract from the L2 operator contract. The receiver checks request/state compatibility and the registered contract before continuing generation. Contract references may be transmitted as IDs, versions or hashes; this does not replace operator and execution-plan validation.
