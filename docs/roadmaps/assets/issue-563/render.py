@@ -122,30 +122,60 @@ def dispatcher(f):
     f.label(186,550,'No measurements: use a valid default',16)
     f.label(186,580,'and mark it as untuned',18)
 
+def speculative_component_figure(f, lang='cn'):
+    en = lang == 'en'
+    def t(cn, eng): return eng if en else cn
+    f.group(30,31,360,586,t('推理引擎 / adapter','Inference engine / adapter'))
+    f.group(430,285,438,273,t('RL-Kernel 投机解码组件','RL-Kernel speculative component'))
+    f.label(650,91,t('抽出共用的投机解码逻辑','Reusable speculative decoding'),24)
+    f.label(650,136,t('共用协议 + sampling / packing','Common protocol + sampling / packing'),19)
+    f.label(650,179,'CUDA / ROCm / Ascend',20)
+
+    f.node(78,94,280,62,[
+        (t('保存本轮前缀状态','Save the round-start state'),22,False),
+        (t('记录已计算状态长度','Record computed-state length'),17,False)])
+    f.node(78,203,280,62,[
+        (t('生成草稿','Generate draft tokens'),23,False),
+        (t('Draft model / MTP 等','Draft model / MTP / other methods'),17,False)])
+    f.node(78,314,280,72,[
+        (t('目标模型验证','Target model verification'),23,False),
+        (t('运行已验证算子，得到目标概率','Validated kernels; target probabilities'),17,False)])
+    f.node(465,314,370,76,[
+        (t('接受 / 拒绝与补充采样','Accept / reject and sample'),23,False),
+        (t('拒绝：残差采样；全接受：bonus','Reject: residual; all accepted: bonus'),17,False),
+        (t('目标 / 草稿分布 + 显式 RNG','Target / draft distributions + RNG'),17,False)],True)
+    f.node(465,448,370,99,[
+        (t('整理保留序列','Pack the retained sequence'),23,False),
+        (t('Tokens + 目标 logprob','Tokens + target logprobs'),19,False),
+        (t('停止条件 + 状态更新要求','Stop rules + state-update plan'),18,False)],True)
+    f.node(78,455,280,88,[
+        (t('提交 / 恢复保留前缀状态','Commit / restore prefix state'),22,False),
+        (t('KV / GDN / 卷积状态','KV / GDN / convolution state'),17,False),
+        (t('更新本轮输出与状态长度','Update output and state lengths'),17,False)])
+    f.node(931,463,245,100,[
+        (t('Rollout 完成','Rollout complete'),23,False),
+        (t('最终 tokens / 目标 logprob','Final tokens / target logprobs'),17,False),
+        (t('采样配置 / 策略标识','Sampling config / policy ID'),17,False)])
+    f.node(931,140,245,110,[
+        (t('训练端独立重算','Training-side recomputation'),22,False),
+        (t('相同 checkpoint / tokens','Same checkpoint / tokens'),17,False),
+        (t('相同概率定义','Same probability semantics'),18,False)])
+
+    f.arrow([(218,156),(218,203)])
+    f.arrow([(218,265),(218,314)])
+    f.arrow([(358,234),(889,234),(889,337),(835,337)],label=t('草稿分布','Draft distribution'),at=(535,214))
+    f.arrow([(358,350),(465,350)])
+    f.label(411,373,t('目标分布','Target'),16)
+    f.arrow([(650,390),(650,448)])
+    f.arrow([(465,499),(358,499)])
+    f.arrow([(180,543),(180,577),(48,577),(48,125),(78,125)],label=t('继续下一轮','Next round'),at=(144,565))
+    f.arrow([(218,543),(218,600),(1053,600),(1053,563)],label=t('达到停止条件','Finished'),at=(850,586))
+    f.arrow([(1053,463),(1053,250)],blue=True,dash=True,label=t('logprob 校验','Logprob check'),at=(1053,355))
+    f.label(414,640,t('实线：生成流程    虚线：完成后的校验','Solid: generation flow    Dashed: validation after rollout'),18)
+
+
 def speculative(f):
-    f.group(20,31,252,558,'Inference engine')
-    f.group(309,31,600,585,'RL-Kernel shared interfaces')
-    f.node(47,104,199,91,['Draft / MTP','Generate draft tokens'])
-    f.node(351,104,517,91,['Target model verifies draft tokens','Attention / MoE / target logprobs'])
-    f.node(351,248,258,83,['Find the accepted prefix','Target / draft probabilities / RNG'],True)
-    f.node(680,248,189,83,['Resample on rejection','Residual distribution'],True)
-    f.node(351,391,517,80,[('Pack retained tokens; apply stop rules',22,False),('On rejection: accepted prefix + resampled token',16,False),('If all accepted: add a bonus token from the target distribution',16,False)],True)
-    f.node(351,529,517,65,['Commit accepted state; roll back rejected state','Track version, accepted length and computed-state length'],True)
-    f.node(47,413,199,122,['Engine cache','KV / GDN / Conv','Snapshot / commit / rollback'])
-    f.node(963,252,212,153,['Rollout output','Retained tokens','Target logprobs','Policy version'])
-    f.node(963,508,212,85,['Training recomputes','Same weights / probability rules'])
-    f.arrow([(246,150),(351,150)])
-    f.arrow([(480,195),(480,248)])
-    f.arrow([(609,290),(680,290)],label='Reject',at=(645,311))
-    f.arrow([(480,331),(480,391)],label='Accepted prefix',at=(469,366))
-    f.arrow([(774,331),(774,391)])
-    f.arrow([(610,471),(610,529)])
-    f.arrow([(351,561),(284,561),(284,474),(246,474)],blue=True,dash=True)
-    f.arrow([(868,560),(939,560),(939,380),(963,380)])
-    f.arrow([(1069,405),(1069,508)])
-    f.label(147,273,'Draft scheduling / cache blocks',16)
-    f.label(147,307,'Connect through the adapter',18)
-    f.label(975,637,'Shared by CUDA / ROCm / Ascend',16)
+    speculative_component_figure(f, 'en')
 
 def pd_contract_figure(f, lang='cn'):
     cn = lang == 'cn'
