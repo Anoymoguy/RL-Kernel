@@ -12,23 +12,35 @@ from reportlab.pdfbase import pdfmetrics
 from reportlab.lib import colors
 
 ASSETS = Path(__file__).resolve().parent
-INK=colors.HexColor('#22282E'); BLUE=colors.HexColor('#1761A2')
-PALE=colors.HexColor('#6E9FD2'); GRAY=colors.HexColor('#68747E')
+INK=colors.HexColor('#1E1E1E'); BLUE=colors.HexColor('#1971C2')
+PALE=colors.HexColor('#99C9EF'); GRAY=colors.HexColor('#515151')
 
 class Figure:
-    def __init__(self,c,w=1200,h=660): self.c=c; self.w=w; self.h=h
+    def __init__(self,c,w=1200,h=660):
+        self.c=c; self.w=w; self.h=h; self.hatched_regions=[]
     def label(self,x,y,s,size=23,bold=False,color=INK,align='center'):
         c=self.c; c.setFillColor(color);c.setFont('Helvetica' if bold else 'Helvetica',size)
+        # Keep thin blue hatching clear of glyphs, without a text-box fill.
+        width=pdfmetrics.stringWidth(s,'Helvetica',size)
+        left=x-width/2 if align=='center' else (x-width if align=='right' else x)
+        baseline=self.h-y-size*.34
+        if any(rx <= x <= rx+rw and ry <= y <= ry+rh for rx,ry,rw,rh in self.hatched_regions):
+            c.saveState(); c.setFillColor(colors.white); c.setStrokeColor(colors.white)
+            c.setLineWidth(1.45)
+            text=c.beginText(left,baseline); text.setFont('Helvetica',size)
+            text.setTextRenderMode(2); text.textOut(s); c.drawText(text); c.restoreState()
+            c.setFillColor(color); c.setFont('Helvetica',size)
         fn={'center':c.drawCentredString,'left':c.drawString,'right':c.drawRightString}[align]
-        fn(x,self.h-y-size*.34,s)
+        fn(x,baseline,s)
     def node(self,x,y,w,h,lines,new=False,small=False):
         c=self.c;yy=self.h-y-h
         c.setFillColor(colors.white);c.setStrokeColor(INK);c.setLineWidth(1.8);c.roundRect(x,yy,w,h,13,fill=1,stroke=1)
         if new:
             c.saveState();p=c.beginPath();p.roundRect(x+1,yy+1,w-2,h-2,12);c.clipPath(p,stroke=0,fill=0)
-            c.setStrokeColor(PALE);c.setLineWidth(.85)
-            for k in range(-int(h),int(w)+int(h),9): c.line(x+k,yy,x+k+h,yy+h)
+            c.setStrokeColor(PALE);c.setLineWidth(.6)
+            for k in range(-int(h),int(w)+int(h),8): c.line(x+k,yy,x+k+h,yy+h)
             c.restoreState();c.setStrokeColor(INK);c.setLineWidth(1.8);c.roundRect(x,yy,w,h,13,stroke=1,fill=0)
+            self.hatched_regions.append((x,y,w,h))
             self.label(x-8,y+8,'[+]',size=20,bold=True,color=BLUE,align='right')
         specs=[]
         for idx,l in enumerate(lines):
