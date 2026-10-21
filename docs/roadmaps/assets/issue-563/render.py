@@ -12,8 +12,8 @@ from reportlab.pdfbase import pdfmetrics
 from reportlab.lib import colors
 
 ASSETS = Path(__file__).resolve().parent
-INK=colors.HexColor('#22282E'); BLUE=colors.HexColor('#2479C8')
-PALE=colors.HexColor('#BAD8F1'); GRAY=colors.HexColor('#68747E')
+INK=colors.HexColor('#22282E'); BLUE=colors.HexColor('#1761A2')
+PALE=colors.HexColor('#6E9FD2'); GRAY=colors.HexColor('#68747E')
 
 class Figure:
     def __init__(self,c,w=1200,h=660): self.c=c; self.w=w; self.h=h
@@ -26,7 +26,7 @@ class Figure:
         c.setFillColor(colors.white);c.setStrokeColor(INK);c.setLineWidth(1.8);c.roundRect(x,yy,w,h,13,fill=1,stroke=1)
         if new:
             c.saveState();p=c.beginPath();p.roundRect(x+1,yy+1,w-2,h-2,12);c.clipPath(p,stroke=0,fill=0)
-            c.setStrokeColor(PALE);c.setLineWidth(.65)
+            c.setStrokeColor(PALE);c.setLineWidth(.85)
             for k in range(-int(h),int(w)+int(h),9): c.line(x+k,yy,x+k+h,yy+h)
             c.restoreState();c.setStrokeColor(INK);c.setLineWidth(1.8);c.roundRect(x,yy,w,h,13,stroke=1,fill=0)
             self.label(x-8,y+8,'[+]',size=20,bold=True,color=BLUE,align='right')
