@@ -42,3 +42,12 @@ default linear logp backend when the extension is built on Hopper.
 - `rl_engine/runtime/registry.py`
 - `rl_engine/platforms/device.py`
 - `rl_engine/kernels/ops/`
+
+## Proposed Profile-Guided Selection
+
+The [Consistency-Preserving Profile-Guided Dispatch RFC](rfc-consistency-preserving-profile-guided-dispatch.md)
+proposes measured selection among numerically certified candidates, with exact
+runtime guards, coordinated plan epochs, and memory admission. It is a design
+proposal, not an implemented dispatch mode or a claim of new validated coverage.
+Strict train-rollout consistency remains a hard constraint; profiling must never
+authorize an unverified numerical fallback.

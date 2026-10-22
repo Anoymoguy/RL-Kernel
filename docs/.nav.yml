@@ -39,6 +39,7 @@ nav:
       - contributing/testing.md
       - contributing/operator-doc-template.md
     - Architecture:
+      - "RFC: Consistency-Preserving Profile-Guided Dispatch": architecture/rfc-consistency-preserving-profile-guided-dispatch.md
       - architecture/*
     - Numerical Contracts:
       - contracts/*
