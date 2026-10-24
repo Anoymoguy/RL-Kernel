@@ -4,4 +4,6 @@
 
 from .core import fingerprint
 from .evidence import Capture
-from .auto import AutoCapture, auto_capture, prepare_auto
+from .auto import AutoCapture, ModuleBoundary, auto_capture, prepare_auto
+from .events import EventCapture, LogicalTensor
+from .discovery import DiscoverCapture

@@ -2,10 +2,13 @@
 
 ## Product contract
 
-`rlk debug SOURCE --matrix auto` reproduces a discrepancy, locates the first observed
-semantic boundary, checks for a compatible replacement, and verifies it in an
-isolated replay. It never edits a production model, enables rollout-logprob
-reuse, or treats an available replacement as a proven fix.
+The debugger observes native training and rollout execution under the same
+logical weights and frozen tokens, then locates the first **observed** differing
+boundary. Diagnosis does not require an RL Kernel implementation of the model.
+`rlk debug BUNDLE` analyzes evidence offline; framework-specific replay and
+`--matrix auto` replacement verification are optional layers above diagnosis.
+It never edits a production model, enables rollout-logprob reuse, or treats an
+available replacement as a proven fix.
 
 There are two entry paths:
 
@@ -60,6 +63,10 @@ submission.
   reconstruction; no model or execution-framework imports.
 * `debug/evidence.py`: portable capture protocol, explicit PyTorch boundary
   hooks, coverage/contract comparison and conservative causal classification.
+* `debug/events.py`: versioned execution-event bundles, completion gates, tensor
+  trees, explicit sample/token/feature coordinates and observed-order comparison.
+* `debug/auto.py`: native eager observer, repeated invocations, actual parameter
+  inventories and lightweight `ModuleBoundary` cross-framework mappings.
 * `debug/adapters.py`: runtime adapter discovery and replacement eligibility.
   External adapters use installed `rlkernel.debug_adapters` entry points;
   manifests cannot request arbitrary Python imports.
@@ -120,9 +127,10 @@ integrates this API once; ordinary users consume its saved bundles with
 Names below are adapter-declared semantics, not automatic matches by class name.
 
 For a model with no RL-Kernel adapter, a PyTorch application can start with the
-generic automatic capture layer. It discovers leaf modules, records the first
-tensor input and output event for each selected module, and leaves feature width
-dynamic until the real forward runs on both sides:
+generic automatic capture layer. It records every selected module invocation,
+all tensor/scalar leaves in positional inputs, keyword inputs and outputs, and
+the model input/output endpoints. Tensors retain their shapes and dtypes; no
+last-dimension flattening is assumed to represent token coordinates:
 
 ```python
 from rl_engine.alignment.debug import AutoCapture, fingerprint, prepare_auto
@@ -132,7 +140,6 @@ prepare_auto(
     bundle_dir, model,
     positions=positions,
     scope="production eager replay; automatic leaf boundaries",
-    exclude=("lm_head",),
 )
 identity = {
     "weights": {
@@ -150,9 +157,292 @@ with AutoCapture(bundle_dir, "training", identity, model, positions=positions):
 Run the same capture on the rollout side with its actual runtime identity and
 `side="rollout"`, then run `./rlk debug /path/to/bundle`. The result can locate
 the first observed module boundary without an adapter or RL Kernel. This is a
-fast generic starting point, not a semantic guarantee: reused modules keep the
-first event only, fused internals remain invisible, and different module graphs
-must be mapped explicitly before their bundles are comparable.
+fast generic starting point, not a semantic guarantee: fused internals remain
+invisible. For two unfamiliar native runtimes, `rlk discover` can now infer a
+decoder-block correspondence before producing a normal evidence bundle. The
+observer independently fingerprints actual
+`state_dict` tensors at entry and exit, in addition to checking the supplied
+case identity. Changed weights, unfinished forwards, missing events or workers,
+uncaptured declared boundaries and unsupported opaque state cannot pass.
+
+There is no implicit 256-module limit. An explicit `include`, `exclude` or
+`max_modules` restricts the claim to the selected scope; pass the same selection
+to preparation and both captures. Root endpoints are enabled by default.
+Selectors that discard fields narrow the evidence; input equality never proves
+equality of unobserved cache, mask or kernel state.
+
+### Automatic discovery for an unfamiliar model
+
+When both sides can already execute a local, eager, eval-mode prefill, the
+discovery path does not require an RL Kernel adapter, model name, layer-name
+convention, per-layer `ModuleBoundary`, or parameter rename table:
+
+```bash
+./rlk discover /path/to/checkpoint \
+  --tokens /path/to/frozen-token-batch.json \
+  --output /path/to/new-discovery
+./rlk debug /path/to/new-discovery
+```
+
+The live wrapper runs the original native HF model and the original native vLLM
+model. It inspects actual module execution and actual parameter storage, then
+validates a mapping using:
+
+1. a uniquely repeated executed block stack on each side;
+2. actual parameter fingerprints and explicit primitive storage contracts;
+3. affine projection inputs/outputs, including declared fused projection slices;
+4. observed block order and exact within-run state handoffs; and
+5. frozen token, position, mask, eval-mode and no-cache evidence.
+
+It does not match by activation error, class-name similarity, module name,
+alphabetical order or “closest” shape. It does not transpose an arbitrary
+matrix. A GPT-style transposed `Conv1D` and a vLLM fused QKV/merged projection
+are accepted only through their framework-declared storage axes and fused
+partition metadata, with the underlying parameter bytes still matching.
+
+The output contains `mapping-plan.json`, immutable side probes and a normal
+`diagnostic-report.json`. The mapping plan is regenerated from probes during
+offline analysis; editing the plan cannot change the result. If there are
+multiple independent stacks, unsupported quantization, ambiguous row layout,
+opaque residual/cache state, changed buffers, missing workers or no unique
+correspondence, the status is `not_comparable` with `needs_mapping` and an
+actionable reason. Automatic discovery currently supports TP=CP=1 eager
+unpadded prefill; use the explicit mapped capture API for distributed sharding,
+decode cache, graph execution or scheduler-specific layouts.
+
+The first reported boundary is the first **automatically validated observed
+boundary**, not a claim about operations hidden inside a fused module. For a
+native mismatch before the first discovered block, the correct result is the
+first block input with input evidence `unknown`; add an explicit embedding or
+root boundary if the pre-block interval must be split further.
+
+`examples/debug/automatic_discovery.py` is a device acceptance harness. It
+creates unfamiliar GPT-2 and Llama checkpoints locally, runs original HF/vLLM
+prefill without RL Kernel replacements, generates a controlled fault and checks
+that both models are automatically mapped. The same wrapper ran against the
+complete official Qwen3-8B checkpoint: it validated all 36 decoder blocks and
+localized the native HF/vLLM mismatch at the first discovered block input.
+
+### Different frameworks: map observations, not kernels
+
+`ModuleBoundary` maps a logical role to a native module path on each side. The
+role must mean the same computation; matching class names is not evidence.
+An input selector receives `(module, args, kwargs)` and an output selector
+receives `(module, args, kwargs, output)`. Selectors may return nested tensor
+trees or `LogicalTensor(value_2d, [(sample_id, token_position), ...])`.
+Do not cast floating-point tensors or re-execute an operator to manufacture a
+matching intermediate.
+
+```python
+from rl_engine.alignment.debug import ModuleBoundary, LogicalTensor
+
+def logical_output(module, args, kwargs, output):
+    return LogicalTensor(output.reshape(len(logical_rows), -1), logical_rows)
+
+# Training: path="transformer.blocks.7"; rollout: path="model.layers.7".
+# Supply selectors for BOTH inputs and outputs if native layouts differ.
+bindings = {
+    "layer.7.block": ModuleBoundary(
+        path=native_path,
+        inputs=logical_input_selector,
+        outputs=logical_output,
+        layer=7,
+    ),
+}
+prepare_auto(root, model, positions=positions, scope="mapped block boundaries",
+             bindings=bindings)
+with AutoCapture(root, side, actual_identity, model, positions=positions,
+                 bindings=bindings, weights=canonical_runtime_weights,
+                 root_inputs=canonical_model_inputs,
+                 root_outputs=canonical_model_outputs):
+    model_forward()
+```
+
+`canonical_runtime_weights()` returns actual tensors under common logical
+parameter names, using explicit fused-weight splits/transposes as necessary.
+Never copy one side's hashes to the other. This inventory is a small observation
+adapter, not an RL Kernel implementation. It may also yield `(name, tensor)`
+pairs lazily: distributed adapters can reconstruct and fingerprint one parameter
+at a time instead of retaining a second complete model. Duplicate names fail.
+
+For a fused boundary with no directly observable equivalent input, use
+`ModuleBoundary(..., observe_inputs=False)`. Its output is still compared, but
+input evidence remains **unknown**. Do not invent a normalization input by
+re-executing an add/norm or by recording an empty placeholder as equal.
+
+`EventCapture` also accepts `LogicalTensor` directly. Declare expected ranks
+with `ranks={"training": [0], "rollout": [0, 1]}` and instantiate each worker
+with its `rank`. Logical shards specify `feature_offset` and `feature_width`;
+sample/position rows may be reordered or partitioned. Missing shards, overlaps,
+dtype changes and disagreeing replicas are rejected. Ordinary unannotated
+tensors on multiple ranks must be bitwise-identical replicas. The case/weight
+identity must already describe complete logical weights, not local shard names.
+
+### Meaning of first divergence and explicit limits
+
+Execution events are keyed by `(forward frame, logical boundary, invocation)`,
+not module registration order. Corresponding workers must agree on the observed
+event sequence before a first-event claim is made. Different call counts or
+event orders produce `not_comparable`, not a guessed alphabetical match.
+Different physical ranks are never ordered by wall-clock timestamps.
+
+The report includes the tensor-tree field, invocation, last equal observed
+boundary and, for explicitly mapped tensors, sample/token/feature coordinates.
+It distinguishes equal declared inputs from already different inputs. This is
+an **observed eager event order**, not a complete causal DAG. Different
+prefill/decode schedules, pipeline-parallel stage graphs, concurrent root
+forwards, graph-only bugs and branch frontiers still require an explicit replay
+or event adapter. A coarse fused boundary gives an interval, not a kernel cause.
+
+Every worker writes an open session, append-only event snapshots, then a
+successful completion record. A crashed or interrupted run is inconclusive.
+Offline analysis streams boundary payloads rather than retaining all model
+tensors at once. `rlkernel.events.v1` bundles are separate from, and do not
+reinterpret, existing `rlkernel.capture.v1` bundles.
+
+### Native HF/vLLM acceptance without a model kernel
+
+`examples/debug/hf_vllm_native.py` creates a tiny random Llama checkpoint locally,
+uses its original HF forward and the original vLLM engine, and maps actual
+embedding/projection boundaries plus final hidden-state endpoints. It checks
+independently reconstructed runtime parameter inventories, actual token IDs and
+actual positions. The fixed batch has two equal-length, unpadded samples with
+unique token IDs so physical row ownership can be checked unambiguously.
+
+```bash
+VLLM_PLUGINS='' python -m examples.debug.hf_vllm_native --output /path/to/new-run
+./rlk debug /path/to/new-run/native
+./rlk debug /path/to/new-run/injected
+```
+
+The native arm may legitimately differ; this tool diagnoses, rather than
+silently replacing, native kernels. The injected arm must identify
+`embedding.output` with equal observed inputs. This acceptance is TP=1 eager
+prefill, not training backward, optimizer updates, paged decode, MoE or arbitrary
+production-scheduler certification. The example intentionally disables optional
+vLLM plugins and does not download a checkpoint or alter production defaults.
+
+Verified on **2026-10-24**, AMD Instinct MI300X VF, PyTorch
+`2.12.0+rocm7.14.0a20260608`, HIP `7.14.60850`, Transformers `5.10.4`,
+vLLM `0.26.1rc1.dev543+g11d76fc72`:
+
+| Arm | Observed result |
+| --- | --- |
+| Native HF/vLLM | Runtime weights and input gates pass. First observed difference: layer 0 attention output-projection **input**, sample 0, token 1, feature 1. The prior equal boundary is embedding output. 326/1024 elements differ at that boundary; max absolute difference `0.001953125`. This localizes an interval, not an output-projection kernel cause. |
+| Injected embedding fault | First difference is `embedding.output`, sample 0, token 0, feature 0, with equal observed inputs. Exactly one element differs at that boundary. |
+
+Both arms contain 12 paired events. Live and CLI `--report-only` JSON reports
+agree exactly; exit code 1 denotes the expected observed mismatch. The final
+regression command covering `test_debug_events.py`, `test_consistency_debugger.py`
+and `test_alignment_diagnostics.py` passes **104 tests** on the MI300X host.
+The same suite on a CPU-only Windows environment passes 103 tests and skips the
+one device-specific smoke test. These counts are scoped to those three files,
+not a claim that the entire repository test suite ran.
+
+### Qwen3 Dense native parallel matrix
+
+`examples/debug/qwen3_parallel.py` extends device acceptance to the existing
+official Qwen3 Dense configurations using **native Megatron/Transformer Engine**
+on the training side and native vLLM on the rollout side. It does not copy a
+model forward or launch a Ray server. The existing Qwen3 grouped-QKV, gate/up
+and TP parameter layout was extracted into `debug/qwen3_layout.py`; both the
+legacy live debugger and this portable capture reuse it.
+
+For the Qwen3-8B run, use the complete 36-layer checkpoint, not a reduced model.
+The frozen case contains two unpadded sequences of 16 tokens each. Megatron's
+native `get_batch_on_this_cp_rank` owns CP token partitioning, and native TE
+executes CP attention with `cp_comm_type="p2p"`. Bindings derive logical
+sample/position coordinates from actual runtime token and position tensors.
+TP-sharded projection inputs carry explicit feature offsets; replicas and CP
+rows are verified during reconstruction. Each worker independently reconstructs
+actual parameters across its TP group and hashes them before and after forward.
+The CP helper receives the **explicit context-parallel group**; defaulting to
+WORLD would also partition across TP ranks. Before capture, TP replicas must
+agree on the actual token/position slice. The comparator independently rejects
+incomplete feature coverage even if the union of incorrectly partitioned tokens
+still covers the whole batch.
+
+Example inside the configured ROCm environment, from the repository root
+(choose GPUs that are actually available):
+
+```bash
+python -m examples.debug.qwen3_parallel matrix \
+  --model /workspace/ljj/debug-models/Qwen3-8B \
+  --output /workspace/ljj/qwen3-debug-matrix-new \
+  --devices 0,1,2,5 \
+  --training 1x1,2x1,1x2,2x2 \
+  --rollout-tps 1,2,4
+```
+
+Training entries are `TPxCP`. Each of the four training configurations runs
+once; each rollout TP runs a native arm and a known embedding-output fault arm
+in one engine session. Completed lane artifacts are immutable and paired
+offline using hard links (copies when hard links are unavailable). Thus seven
+framework launches cover twelve topology pairs and twelve corresponding fault
+controls, rather than relaunching both frameworks for every pair.
+
+`matrix.json` records the status, event count and first difference for every pair.
+An acceptance **pass** means comparable real evidence and, for the fault arm,
+correct localization with equal observed inputs. It does **not** mean native
+Megatron and vLLM are bitwise identical, or that a kernel cause has been proven.
+Compare `embedding`, each layer's attention output-projection and FFN down
+projection, final norm output and the actual final-hidden endpoint. Output-only
+final norm avoids fabricating an input for vLLM's fused residual normalization.
+Logits, sampling, backward, optimizer updates, rollout CP and paged decode are
+outside this matrix's numerical acceptance scope.
+
+The `compare` subcommand performs only offline pairing from completed `lanes/`
+in a prepared output directory. It is useful when independently captured lanes
+are brought together; it does not silently relaunch a failed runtime or overwrite
+an existing paired bundle. Each paired bundle also supports the normal
+`rlk debug BUNDLE --report-only` path.
+
+#### MI300X parallel acceptance, 2026-10-24
+
+The full Qwen3-8B checkpoint was pinned to revision
+`b968826d9c46dd6066d109eabc6255188de91218`. The tested stack was Megatron Core
+`0.18.0`, Transformer Engine `2.14.0.dev0+e6ede467`, PyTorch
+`2.12.0+rocm7.14.0a20260608`, HIP `7.14.60850`, Transformers `5.10.4` and vLLM
+`0.26.1rc1.dev543+g11d76fc72.rocm714`. PP/DP were 1; rollout CP was 1.
+
+Each cell below passed both the native diagnostic and injected-fault acceptance:
+
+| Megatron TP / CP | vLLM TP=1 | vLLM TP=2 | vLLM TP=4 |
+| --- | --- | --- | --- |
+| 1 / 1 | pass | pass | pass |
+| 2 / 1 | pass | pass | pass |
+| 1 / 2 | pass | pass | pass |
+| 2 / 2 | pass | pass | pass |
+
+All **24 cases** contain 149 paired execution events and agree on all **399
+logical parameter fingerprints** reconstructed from actual runtime weights.
+Native embedding outputs agree bitwise in all twelve topology pairs. Their
+first observed difference is uniformly `layer.0.attention_projection.input`,
+sample 0, token 0, feature 123. The maximum difference at that boundary is
+`0.0009765625` for training CP=1 and `0.001953125` for CP=2. These native
+differences are reported, not hidden by a tolerance or labelled a proven cause.
+
+All twelve fault controls localize `embedding.output` with equal observed inputs,
+sample 0, token 0, feature 0, and exactly one differing element. All 24 CLI
+`--report-only` reports match their initial matrix-analysis JSON exactly. A missing-worker
+negative control is correctly `not_comparable`.
+
+The first mixed-TP attempt exposed a WORLD-versus-CP batch-partitioning mistake
+in the example integration. Its incomplete feature coverage was rejected rather
+than interpreted as numerical drift. The affected TP=2 training lanes were
+recaptured with an explicit CP group; already complete unaffected lanes were
+reused unchanged. Final evidence run: `pr442-qwen3-parallel-20261024-03`.
+
+The four diagnostic test files (`test_debug_events.py`,
+`test_debug_qwen3_parallel.py`, `test_consistency_debugger.py`,
+`test_alignment_diagnostics.py`) pass **123 tests** on MI300X. The CPU-only
+Windows run passes 122 and skips the device smoke test. This is not a
+whole-repository regression claim, backward/optimizer acceptance, or a
+measurement of production performance.
+
+### Legacy explicit boundary API
+
+Existing explicitly ordered, normalized boundary bundles remain supported:
 
 ```python
 from pathlib import Path

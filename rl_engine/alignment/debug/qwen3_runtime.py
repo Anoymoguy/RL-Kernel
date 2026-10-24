@@ -410,48 +410,12 @@ def tensor_tiles(name: str, weight: torch.Tensor, row: int = 0, col: int = 0):
 
 def weight_tiles(instance: Any, side: str) -> dict[str, str]:
     """Hash logical weight tiles, so different physical TP splits compare exactly."""
+    from .qwen3_layout import layer_parameters
+
     rank, world, _cp_rank, _cp_world = topology_coordinates(side)
     result: dict[str, str] = {}
-
-    def add(name: str, weight: torch.Tensor, row: int = 0, col: int = 0):
-        result.update(tensor_tiles(name, weight, row, col))
-
-    config = getattr(instance, "config", None)
-    attn = instance.self_attention if side == "training" else instance.self_attn
-    mlp = instance.mlp
-    head = int(config.kv_channels if side == "training" else attn.head_dim)
-    groups = int(config.num_query_groups if side == "training" else attn.total_num_kv_heads)
-    heads = int(config.num_attention_heads if side == "training" else attn.total_num_heads)
-    local_groups, local_heads = max(1, groups // world), heads // world
-    group_rank = rank if groups >= world else rank // (world // groups)
-    if side == "training":
-        qkv = attn.linear_qkv.weight
-        packed = qkv.reshape(local_groups, -1, head, qkv.shape[-1])
-        q = packed[:, :-2].reshape(-1, qkv.shape[-1])
-        k, v = packed[:, -2].reshape(-1, qkv.shape[-1]), packed[:, -1].reshape(-1, qkv.shape[-1])
-        gate, up = mlp.linear_fc1.weight.chunk(2, dim=0)
-        proj, down = attn.linear_proj.weight, mlp.linear_fc2.weight
-        add("attention_norm", attn.linear_qkv.layer_norm_weight)
-        add("mlp_norm", mlp.linear_fc1.layer_norm_weight)
-        add("q_norm", attn.q_layernorm.weight)
-        add("k_norm", attn.k_layernorm.weight)
-    else:
-        q, k, v = attn.qkv_proj.weight.split(
-            (local_heads * head, local_groups * head, local_groups * head), dim=0
-        )
-        gate, up = mlp.gate_up_proj.weight.chunk(2, dim=0)
-        proj, down = attn.o_proj.weight, mlp.down_proj.weight
-        add("attention_norm", instance.input_layernorm.weight)
-        add("mlp_norm", instance.post_attention_layernorm.weight)
-        add("q_norm", attn.q_norm.weight)
-        add("k_norm", attn.k_norm.weight)
-    add("q", q, row=rank * q.shape[0])
-    add("k", k, row=group_rank * k.shape[0])
-    add("v", v, row=group_rank * v.shape[0])
-    add("o", proj, col=rank * proj.shape[1])
-    add("gate", gate, row=rank * gate.shape[0])
-    add("up", up, row=rank * up.shape[0])
-    add("down", down, col=rank * down.shape[1])
+    for name, shard in layer_parameters(instance, side, rank, world).items():
+        result.update(tensor_tiles(name, shard.value, shard.row, shard.col))
     return result
 
 

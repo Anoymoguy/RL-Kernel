@@ -857,6 +857,26 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="rlk-repro", description=__doc__)
     subparsers = parser.add_subparsers(dest="command", required=True)
 
+    discover_parser = subparsers.add_parser(
+        "discover", help="automatically align unfamiliar native HF/vLLM model blocks"
+    )
+    discover_parser.add_argument("model", type=Path, help="local HF safetensors checkpoint")
+    discover_parser.add_argument("--tokens", type=Path, required=True, help="JSON token-ID batch")
+    discover_parser.add_argument(
+        "--output", type=Path, required=True, help="new evidence directory"
+    )
+    discover_parser.add_argument(
+        "--dtype",
+        choices=("bfloat16", "float16", "float32"),
+        default="bfloat16",
+    )
+    discover_parser.add_argument(
+        "--training-stack", help="optional confirmation for ambiguous stacks"
+    )
+    discover_parser.add_argument(
+        "--rollout-stack", help="optional confirmation for ambiguous stacks"
+    )
+
     doctor_parser = subparsers.add_parser(
         "doctor", help="check host, runtime, assets, and topology"
     )
@@ -1057,8 +1077,14 @@ def main(argv: Sequence[str] | None = None) -> int:
         parser.error("'debug doctor' was removed; use 'doctor' instead")
     args = parser.parse_args(argv)
     try:
+        if args.command == "discover":
+            from rl_engine.alignment.debug.discover_runtime import run_cli
+
+            return run_cli(args)
         if args.command == "debug" and (
-            args.report_only or (args.source / "capture-manifest.json").is_file()
+            args.report_only
+            or (args.source / "capture-manifest.json").is_file()
+            or (args.source / "discovery-manifest.json").is_file()
         ):
             from rl_engine.alignment.debug.entry import main as diagnostic_main
 
@@ -1109,10 +1135,9 @@ def main(argv: Sequence[str] | None = None) -> int:
             flags = [part for key, value in defaults.items() for part in (f"--{key}", str(value))]
             args = parser.parse_args([argv[0], *flags, *argv[1:]])
             args.explicit_flags = explicit
-        elif (
-            profile.get("requirements", {}).get("backend") == "rocm"
-            and args.command not in {"doctor"}
-        ):
+        elif profile.get("requirements", {}).get("backend") == "rocm" and args.command not in {
+            "doctor"
+        }:
             raise ReproError(
                 "This ROCm profile supports plan and run (including automatic validation); "
                 f"the {args.command} command is currently CUDA-only"

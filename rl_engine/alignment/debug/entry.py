@@ -14,6 +14,12 @@ from .evidence import analyze_bundle, diagnosis
 def analyze(directory: Path, *, output: Path | None = None) -> dict[str, Any]:
     """Analyze saved evidence without executing a model."""
     directory = directory.resolve()
+    if (directory / "discovery-manifest.json").is_file():
+        from .discovery_report import analyze_discovery
+
+        report = analyze_discovery(directory)
+        save_report(output or directory / "diagnostic-report.json", report)
+        return report
     matrix = directory / "matrix-report.json"
     if matrix.is_file():
         from .session import apply_evidence_gates, finish_summary
@@ -31,7 +37,14 @@ def analyze(directory: Path, *, output: Path | None = None) -> dict[str, Any]:
         compact_summary(directory, report)
         return report
     if (directory / "capture-manifest.json").is_file():
-        report = analyze_bundle(directory)
+        manifest = json.loads((directory / "capture-manifest.json").read_text("utf-8"))
+        from .events import EVENT_SCHEMA, analyze_events
+
+        report = (
+            analyze_events(directory)
+            if manifest.get("schema_version") == EVENT_SCHEMA
+            else analyze_bundle(directory)
+        )
         save_report(output or directory / "diagnostic-report.json", report)
         return report
     paths = list(directory.rglob("diagnostics/layers/*-layer*-call*.pt"))
@@ -56,6 +69,12 @@ def analyze(directory: Path, *, output: Path | None = None) -> dict[str, Any]:
 
 def report_lines(report: dict[str, Any], label: str = "debug") -> list[str]:
     lines = [f"[{label}] {report['status']}"]
+    if report.get("automatic_mapping"):
+        plan = report["automatic_mapping"]
+        lines.append(
+            f"[automatic mapping] {plan['status']}; "
+            f"blocks={len(plan.get('blocks', []))}; details=mapping-plan.json"
+        )
     if "groups" in report:
         lines.append(f"[result] {report['conclusion']}")
         for group in report["groups"]:
@@ -70,6 +89,13 @@ def report_lines(report: dict[str, Any], label: str = "debug") -> list[str]:
             f"token={first.get('position')}"
         )
         lines.append(f"[input evidence] {first.get('input_evidence', 'unknown')}")
+        if "invocation" in first:
+            lines.append(
+                f"[event] frame={first['frame']} invocation={first['invocation']} "
+                f"field={first.get('tensor_path')} sample={first.get('sample_id')} "
+                f"feature={first.get('feature', first.get('first_index'))}"
+            )
+            lines.append(f"[last equal] {first.get('last_equal_boundary')}")
     decision = report.get("diagnosis", diagnosis(report))
     lines.append(f"[diagnosis] {decision['level']}: {decision['reason']}")
     for check in decision.get("next_checks", []):
@@ -80,6 +106,8 @@ def report_lines(report: dict[str, Any], label: str = "debug") -> list[str]:
     if isinstance(replacement, dict):
         lines.append(f"[replacement] {replacement['status']}: {replacement['reason']}")
     lines.append(f"[scope] {report.get('scope', 'captured evidence only')}")
+    if report.get("coverage"):
+        lines.append(f"[coverage] {json.dumps(report['coverage'], ensure_ascii=False)}")
     return lines
 
 
