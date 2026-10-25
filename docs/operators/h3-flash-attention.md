@@ -5,14 +5,14 @@ long sequences. `h3-flash-attention-v1` is an additional, optional strict backen
 implementation. It does not replace or modify #553 and does not claim the RFC row.
 
 Scope equals #553: BF16 contiguous BSHD `[B,S,56,128]`, non-causal MHA, first derivatives, Q/K already normalised/rotated.
-Anything else fails closed (`ValueError`, no fallback). CUDA only.
+Anything else fails closed (`ValueError` for invalid tensors, `RuntimeError` when Triton is missing; no fallback). CUDA only.
 
 ## Usage
 Public entry point: `rl_engine.backends.shared.triton.attention.h3_flash.H3FlashAttentionOp` (drop-in for `H3FullAttentionOp`).
 
 - Inputs: `q`, `k`, `v`, BF16, contiguous, shape `[B, S, 56, 128]`, on one NVIDIA CUDA device, fewer than 2**31 elements each.
 - Output: BF16 `[B, S, 56, 128]`; gradients to `q`, `k`, `v` are BF16 with the same shape.
-- Anything else raises `ValueError` (no fallback).
+- Invalid tensors (shape, dtype, layout, device, size) raise `ValueError`; a missing Triton raises `RuntimeError`. No fallback.
 
 ```python
 op = H3FlashAttentionOp()
