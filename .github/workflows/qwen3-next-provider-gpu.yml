@@ -116,4 +116,13 @@ jobs:
           PY
       - name: Check pinned providers in their own process
         run: |
-          python3 -m pytest -q tests/models/qwen3_next/check_qwen3_next_norm_providers.py tests/models/qwen3_next/check_gdn_recurrent_golden.py
+          set -o pipefail
+          log="$RUNNER_TEMP/provider-pytest.log"
+          python3 -m pytest -q -rs tests/models/qwen3_next/check_qwen3_next_norm_providers.py tests/models/qwen3_next/check_gdn_recurrent_golden.py | tee "$log"
+          # Fail closed: these modules skip as a whole when CUDA or vLLM is missing, and pytest
+          # exits 0 for an all-skipped run. A skipped provider check is not provider evidence.
+          if grep -Eq '^SKIPPED|[0-9]+ skipped' "$log"; then
+            echo "::error::a provider check was skipped"
+            exit 1
+          fi
+          grep -Eq '[0-9]+ passed' "$log"
