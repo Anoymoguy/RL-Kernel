@@ -7,9 +7,12 @@ from __future__ import annotations
 import pytest
 import torch
 
-pytestmark = pytest.mark.skipif(not torch.cuda.is_available(), reason="needs CUDA")
+from rl_engine.backends.shared.triton.attention import h3_flash as hf
 
-from rl_engine.backends.shared.triton.attention import h3_flash as hf  # noqa: E402
+pytestmark = pytest.mark.skipif(
+    not torch.cuda.is_available() or torch.version.hip is not None or not hf.HAS_TRITON,
+    reason="needs NVIDIA CUDA and Triton",
+)
 
 H, D = hf.HEADS, hf.HEAD_DIM
 
@@ -107,3 +110,20 @@ def test_delta_uses_fp32_output():
     _, ref_dq, _, _ = _fp64(q, k, v, grad)
     assert ref_dq.abs().max().item() < 1e-6
     assert dq.abs().max().item() < 1e-3, dq.abs().max().item()
+
+
+def test_rejects_int32_offset_overflow():
+    seq = 2**31 // (H * D) + 1  # first length whose BF16 tensor reaches 2**31 elements
+    q = torch.empty(1, seq, H, D, device="cuda", dtype=torch.bfloat16)
+    with pytest.raises(ValueError, match="2\\*\\*31"):
+        hf._validate(q, q, q)
+
+
+def test_backward_validates_aux_tensors():
+    q, k, v = _qkv(1, 4, grad=False)
+    out, out32, lse = hf.flash_forward(q, k, v)
+    grad = torch.ones_like(q)
+    with pytest.raises(ValueError):
+        hf.flash_backward(grad, q, k, v, out32.bfloat16(), lse)
+    with pytest.raises(ValueError):
+        hf.flash_backward(grad, q, k, v, out32, lse[:, :, :2].contiguous())

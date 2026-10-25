@@ -7,6 +7,19 @@ implementation. It does not replace or modify #553 and does not claim the RFC ro
 Scope equals #553: BF16 contiguous BSHD `[B,S,56,128]`, non-causal MHA, first derivatives, Q/K already normalised/rotated.
 Anything else fails closed (`ValueError`, no fallback). CUDA only.
 
+## Usage
+Public entry point: `rl_engine.backends.shared.triton.attention.h3_flash.H3FlashAttentionOp` (drop-in for `H3FullAttentionOp`).
+
+- Inputs: `q`, `k`, `v`, BF16, contiguous, shape `[B, S, 56, 128]`, on one NVIDIA CUDA device, fewer than 2**31 elements each.
+- Output: BF16 `[B, S, 56, 128]`; gradients to `q`, `k`, `v` are BF16 with the same shape.
+- Anything else raises `ValueError` (no fallback).
+
+```python
+op = H3FlashAttentionOp()
+out = op(q, k, v)        # q, k, v: BF16 [B, S, 56, 128] on CUDA, requires_grad as needed
+out.backward(grad_out)
+```
+
 ## Contract
 - One program per (batch, head, row tile) walks key tiles in ascending `BLOCK_N=64` order; fixed tiles (fwd 128x64, bwd 64), no
   autotune, no split-KV, no atomics. A row's output depends only on its own query row and K/V, so it is batch-invariant and
@@ -27,10 +40,11 @@ Relative error vs FP64 (seq 925, out/dq/dk/dv): flash 1.66e-3 to 1.67e-3, #553 1
 | 4096 | 2.01 / 7.20 | 104.8 / 338.6 | 0.76 / 3.12 |
 | 8349 | 7.96 / 29.7 | 436.7 / 1427 | 3.22 / 13.4 |
 
-Flash is 24x (925) to 48x (8349) faster than #553 in forward+backward, and 1.6x to 2.3x slower than SDPA in
-forward+backward; SDPA uses non-deterministic fused kernels. Timings are medians on one H100 and vary by about 10 to 30 percent
+Flash is 24x (925) to 48x (8349) faster than #553 in forward+backward, and 1.3x to 2.3x slower than SDPA in
+forward+backward. The SDPA provider selects among available implementations; this measurement did not establish whether the
+selected one is deterministic, so no determinism claim is made for it. Timings are medians on one H100 and vary by about 10 to 30 percent
 between runs at small sizes.
 
 ## Tests and tools
-- `tests/backends/cuda/test_h3_flash_attention.py`: FP64 accuracy, bitwise repeat, batch 3 vs 1, head-shard invariance, fail-closed.
+- `tests/backends/cuda/test_h3_flash_attention.py`: FP64 accuracy, bitwise repeat, batch 3 vs 1, head-shard invariance, fail-closed, FP32-output delta regression, int32 size guard, auxiliary-tensor validation. Skipped without NVIDIA CUDA and Triton.
 - `tools/validation/models/h3_flash_attention_bench.py`: accuracy and timing against #553, SDPA and FP64.

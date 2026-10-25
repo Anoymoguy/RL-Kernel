@@ -287,6 +287,7 @@ if HAS_TRITON:
 
 
 def _validate(*tensors: torch.Tensor) -> None:
+    """Fail closed unless all tensors are equal BF16 contiguous [B,S,56,128] on one CUDA device."""
     if not HAS_TRITON:
         raise RuntimeError("h3-flash-attention-v1 requires Triton (no fallback)")
     q = tensors[0]
@@ -301,13 +302,18 @@ def _validate(*tensors: torch.Tensor) -> None:
             raise ValueError("H3 flash attention requires tensors on one NVIDIA CUDA device")
     if q.shape[0] == 0 or q.shape[1] == 0:
         raise ValueError("H3 flash attention requires nonempty tensors")
+    if q.numel() >= 2**31:
+        # kernels compute element offsets in int32; larger inputs would wrap
+        raise ValueError("H3 flash attention requires fewer than 2**31 elements per tensor")
 
 
 def _strides(x: torch.Tensor):
+    """Return the (batch, sequence, head) strides of a BSHD tensor."""
     return x.stride(0), x.stride(1), x.stride(2)
 
 
 def flash_forward(q, k, v):
+    """Run the fused forward; returns the BF16 output, its FP32 copy and the row logsumexp."""
     _validate(q, k, v)
     b, s = q.shape[:2]
     out = torch.empty_like(q)
@@ -338,7 +344,22 @@ def flash_forward(q, k, v):
 
 
 def flash_backward(grad_out, q, k, v, out32, lse):
+    """Run the fused backward from the FP32 forward output; returns ``(dq, dk, dv)``."""
     _validate(q, k, v, grad_out)
+    if (
+        out32.shape != q.shape
+        or out32.dtype != torch.float32
+        or not out32.is_contiguous()
+        or out32.device != q.device
+    ):
+        raise ValueError("flash_backward requires a contiguous FP32 out32 shaped like q")
+    if (
+        lse.shape != (q.shape[0], HEADS, q.shape[1])
+        or lse.dtype != torch.float32
+        or not lse.is_contiguous()
+        or lse.device != q.device
+    ):
+        raise ValueError("flash_backward requires a contiguous FP32 lse of shape [B,56,S]")
     b, s = q.shape[:2]
     dq, dk, dv = (torch.empty_like(q) for _ in range(3))
     delta = torch.empty_like(lse)
@@ -371,14 +392,18 @@ def flash_backward(grad_out, q, k, v, out32, lse):
 
 
 class _FlashFn(torch.autograd.Function):
+    """Autograd wrapper that saves the FP32 output for the backward delta."""
+
     @staticmethod
     def forward(ctx, q, k, v):
+        """Forward pass; saves ``q, k, v, out32, lse`` for backward."""
         out, out32, lse = flash_forward(q, k, v)
         ctx.save_for_backward(q, k, v, out32, lse)
         return out
 
     @staticmethod
     def backward(ctx, grad_out):
+        """Backward pass; returns ``(dq, dk, dv)``."""
         q, k, v, out32, lse = ctx.saved_tensors
         return flash_backward(grad_out.contiguous(), q, k, v, out32, lse)
 
@@ -389,12 +414,14 @@ class H3FlashAttentionOp:
     backend_id = "rlkernel.triton.h3_flash_attention.v1"
 
     def __call__(self, q, k, v):
+        """Attention over BF16 ``[B,S,56,128]`` Q/K/V with autograd support."""
         _validate(q, k, v)
         return _FlashFn.apply(q, k, v)
 
     forward = __call__
 
     def provenance(self):
+        """Describe the backend, profile and fixed tile configuration used."""
         return {
             "backend": self.backend_id,
             "profile": PROFILE,

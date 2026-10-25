@@ -65,7 +65,7 @@ def main() -> None:
     except Exception as exc:  # noqa: BLE001
         print("553 unavailable:", exc)
     rows = []
-    for s in args.seqs:
+    for idx, s in enumerate(args.seqs):
         g = torch.Generator(device="cuda").manual_seed(1)
         q, k, v = (
             torch.randn(1, s, H, D, device="cuda", dtype=torch.bfloat16, generator=g)
@@ -73,13 +73,18 @@ def main() -> None:
         )
         grad = torch.randn(1, s, H, D, device="cuda", dtype=torch.bfloat16, generator=g)
         ref = fp64(q, k, v, grad) if s <= 4096 else None
-        for name, op in ops.items():
+        names = list(ops)
+        shift = idx % len(names)  # rotate the measurement order per sequence length
+        order = names[shift:] + names[:shift]
+        for name in order:
+            op = ops[name]
             if name == "h3_full_553" and s > 8349:
                 continue
             got = run(op, q, k, v, grad)
             row = {
                 "seq": s,
                 "impl": name,
+                "order": order,
                 "fwd_ms": timed(lambda: op(q, k, v)),
                 "fwd_bwd_ms": timed(lambda: run(op, q, k, v, grad), 3),
             }
