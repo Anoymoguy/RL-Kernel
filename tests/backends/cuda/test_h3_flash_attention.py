@@ -93,3 +93,17 @@ def test_fail_closed():
         hf.H3FlashAttentionOp()(
             q[:, :, :8].contiguous(), k[:, :, :8].contiguous(), v[:, :, :8].contiguous()
         )
+
+
+def test_delta_uses_fp32_output():
+    # V rows 1 and 1.0078125 make BF16-rounded O differ from FP32 O; with Q=0 and
+    # K=1 every score ties, so exact dQ is zero while a BF16 delta gives ~0.044.
+    q = torch.zeros(1, 2, H, D, device="cuda", dtype=torch.bfloat16)
+    k = torch.ones_like(q)
+    v = torch.ones_like(q)
+    v[:, 1] = 1.0078125
+    grad = torch.ones_like(q)
+    _, dq, _, _ = _run(q, k, v, grad)
+    _, ref_dq, _, _ = _fp64(q, k, v, grad)
+    assert ref_dq.abs().max().item() < 1e-6
+    assert dq.abs().max().item() < 1e-3, dq.abs().max().item()

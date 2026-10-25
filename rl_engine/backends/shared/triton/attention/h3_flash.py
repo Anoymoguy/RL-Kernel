@@ -60,6 +60,7 @@ if HAS_TRITON:
         K,
         V,
         O,
+        O32,
         LSE,
         stride_b,
         stride_s,
@@ -111,6 +112,12 @@ if HAS_TRITON:
         tl.store(
             O + base + rows[:, None] * stride_s + dims[None, :],
             out.to(tl.bfloat16),
+            mask=row_ok[:, None],
+        )
+        # FP32 copy feeds delta = rowsum(O * dO); BF16-rounded O would bias dQ.
+        tl.store(
+            O32 + base + rows[:, None] * stride_s + dims[None, :],
+            out,
             mask=row_ok[:, None],
         )
         tl.store(LSE + b * lse_b + h * lse_h + rows, m_i + tl.log(l_i), mask=row_ok)
@@ -304,6 +311,7 @@ def flash_forward(q, k, v):
     _validate(q, k, v)
     b, s = q.shape[:2]
     out = torch.empty_like(q)
+    out32 = torch.empty(q.shape, device=q.device, dtype=torch.float32)
     lse = torch.empty(b, HEADS, s, device=q.device, dtype=torch.float32)
     cfg = FWD_CONFIG
     grid = (triton.cdiv(s, cfg["BLOCK_M"]), b * HEADS)
@@ -312,6 +320,7 @@ def flash_forward(q, k, v):
         k,
         v,
         out,
+        out32,
         lse,
         *_strides(q),
         lse.stride(0),
@@ -325,11 +334,11 @@ def flash_forward(q, k, v):
         num_warps=cfg["num_warps"],
         num_stages=cfg["num_stages"],
     )
-    return out, lse
+    return out, out32, lse
 
 
-def flash_backward(grad_out, q, k, v, out, lse):
-    _validate(q, k, v, out, grad_out)
+def flash_backward(grad_out, q, k, v, out32, lse):
+    _validate(q, k, v, grad_out)
     b, s = q.shape[:2]
     dq, dk, dv = (torch.empty_like(q) for _ in range(3))
     delta = torch.empty_like(lse)
@@ -343,7 +352,7 @@ def flash_backward(grad_out, q, k, v, out, lse):
         num_stages=cfg["num_stages"],
     )
     _delta_kernel[grid](
-        out,
+        out32,
         grad_out,
         delta,
         *_strides(q),
@@ -364,14 +373,14 @@ def flash_backward(grad_out, q, k, v, out, lse):
 class _FlashFn(torch.autograd.Function):
     @staticmethod
     def forward(ctx, q, k, v):
-        out, lse = flash_forward(q, k, v)
-        ctx.save_for_backward(q, k, v, out, lse)
+        out, out32, lse = flash_forward(q, k, v)
+        ctx.save_for_backward(q, k, v, out32, lse)
         return out
 
     @staticmethod
     def backward(ctx, grad_out):
-        q, k, v, out, lse = ctx.saved_tensors
-        return flash_backward(grad_out.contiguous(), q, k, v, out, lse)
+        q, k, v, out32, lse = ctx.saved_tensors
+        return flash_backward(grad_out.contiguous(), q, k, v, out32, lse)
 
 
 class H3FlashAttentionOp:
