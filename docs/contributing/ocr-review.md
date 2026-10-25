@@ -50,13 +50,13 @@ job so the problem is visible. Dependabot PRs can have separate secret restricti
 do not assume ordinary Actions secrets are available to them.
 
 The integration PR does not review itself using its proposed workflow:
-`pull_request_target` loads the workflow from the PR's base branch. The pinned
-action then checks out that trusted base (the event's base ref) and reads rules
-from it; the absent explicit `ref` does not make it silently use the repository
-default branch. The workflow and rule file must therefore be present on every
-target branch that should receive automatic reviews. Keep long-lived `test-*`,
-`dsv4-*` and `p6-*` branches synchronized with the integration after it lands
-on the default branch. After merging
+`pull_request_target` loads the workflow from the repository's default branch,
+and the pinned action's checkout without an explicit `ref` also uses that
+trusted default branch. Keep the workflow and `.opencodereview/rule.json` on
+the default branch; the `branches` filter controls which PR target branches
+receive the review, so those target branches do not need their own copies. A
+rule change made only on `test-*`, `dsv4-*` or `p6-*` is not used until it is
+merged into the default branch. After merging
 and configuring the upstream, open a small PR and push another commit to verify
 both the initial review and update behavior. For already-open PRs, push a new
 commit or reopen the PR to trigger review. Maintainers can also re-run an existing
