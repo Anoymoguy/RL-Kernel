@@ -15,7 +15,9 @@ on:
       - test-*
       - dsv4-*
       - p6-*
-    types: [opened, synchronize, reopened]
+    # Draft PRs are skipped by the job below. Include ready_for_review so the
+    # first OCR run starts when a contributor marks a draft ready.
+    types: [opened, synchronize, reopened, ready_for_review]
 
 permissions:
   contents: read
@@ -27,7 +29,9 @@ concurrency:
 
 jobs:
   review:
-    if: vars.OCR_REVIEW_ENABLED != 'false'
+    # A draft PR can still emit pull_request_target events. Do not call the
+    # provider until the author marks the PR ready for review.
+    if: vars.OCR_REVIEW_ENABLED != 'false' && github.event.pull_request.draft != true
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
