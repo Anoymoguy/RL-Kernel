@@ -11,7 +11,9 @@
 #
 # Security: do not use pull_request_target. Fork PRs never reach the self-hosted
 # runner; a maintainer dispatches the reviewed commit from a trusted branch and
-# names the exact repository and 40-character SHA to run (checked below).
+# names the repository and 40-character SHA to run. Only the format is checked
+# below: the dispatcher needs write access to the repository and is responsible for
+# naming a commit that has been reviewed (as in ws1-chain-npu.yml).
 
 name: Qwen3-Next-provider-GPU
 
