@@ -3,11 +3,11 @@
 [Open Code Review (OCR)](https://github.com/alibaba/open-code-review) provides an
 automated first review of pull requests targeting `main`, `test`, any `test-*`
 qualification branch, any `dsv4-*` development branch, or any `p6-*` development
-branch. Opening,
-reopening, or pushing commits to a PR starts a review, including draft and fork
-PRs when credentials are available. New pushes cancel older runs for the same PR;
-the latest head receives the review. Multiple commits in one push produce one
-review rather than one review per commit.
+branch. Opening, reopening, or pushing commits to a ready-for-review PR starts a
+review. Draft PRs are skipped; marking a draft ready for review starts its first
+OCR run. Fork PRs are reviewed when credentials are available. New pushes cancel
+older runs for the same PR; the latest head receives the review. Multiple commits
+in one push produce one review rather than one review per commit.
 
 OCR posts actionable findings as GitHub review comments and maintains one summary
 comment per PR. High and critical findings normally appear inline; medium and low
