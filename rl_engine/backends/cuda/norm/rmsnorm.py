@@ -160,6 +160,11 @@ class RMSNormCudaOp:
         hidden = x.shape[-1]
         # Only `rstd` is used, and it does not depend on the offset; the offset is
         # passed so this is the same call the forward makes, not because it matters.
+        # The kernel's own `rstd` is deliberate: the contributions must fold to exactly the
+        # `dweight` the CUDA backward produces, and that backward uses the saved kernel `rstd`.
+        # A torch-computed `rstd` differs in the last bits and breaks
+        # test_cuda_parameter_contributions_reproduce_backward. The op's constructor has
+        # already checked the extension (`_require_cuda_rmsnorm`).
         _, rstd = _C.rmsnorm_forward(
             x.contiguous().reshape(-1, hidden),
             weight.contiguous(),
@@ -385,6 +390,8 @@ class Qwen3NextRMSNormGatedCudaOp:
             raise ValueError(f"gate must match x, got {tuple(gate.shape)} vs {tuple(x.shape)}")
         hidden = x.shape[-1]
         act = _GATE_ACTIVATIONS[self.activation]
+        # Kernel `rstd` on purpose, as in RMSNormCudaOp.parameter_vjp_contributions_fp32;
+        # the constructor has already run `_require_cuda_gated`.
         _, rstd = _C.rmsnorm_gated_forward(
             x.contiguous().reshape(-1, hidden),
             weight.contiguous(),
