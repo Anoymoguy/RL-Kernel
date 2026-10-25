@@ -5,7 +5,15 @@ name: Open Code Review
 
 on:
   pull_request_target:
-    branches: [main, test]
+    # Review the stable branch, model qualification branches, and active
+    # DeepSeek-V4/P6 development lines. The patterns also cover new branches
+    # created within those branch families.
+    branches:
+      - main
+      - test
+      - test-*
+      - dsv4-*
+      - p6-*
     types: [opened, synchronize, reopened]
 
 permissions:
