@@ -299,11 +299,11 @@ class RMSNormGatedCuda(torch.autograd.Function):
         # dweight: the gate is a per-element constant here, so the ungated row
         # contributions apply once dy carries act(gate).
         gate_act = _gate_activation_fp32(gate, act)
-        rows = rmsnorm_dweight_rows_fp32(x, dy.float() * gate_act, rstd=rstd)
+        rows = rmsnorm_dweight_rows_fp32(x, dy.float() * gate_act, rstd=rstd.reshape(x.shape[:-1]))
         dw = _fold_dweight_rows(rows, weight.dtype)
 
         # dgate: row-local and reduction-free.
-        normed = x.float() * rstd.unsqueeze(-1)
+        normed = x.float() * rstd.reshape(x.shape[:-1]).unsqueeze(-1)
         # Same guard as the kernels: an unconditional `+ 0.0` turns -0.0 weights into +0.0.
         scale = weight.float()
         if ctx.weight_offset != 0.0:
