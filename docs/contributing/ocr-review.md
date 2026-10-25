@@ -15,6 +15,12 @@ findings, plus style, documentation and maintainability categories, go into the
 summary. Severity comes from the model and is not a guarantee of correctness.
 Maintainers decide whether a finding is valid and whether the PR can merge.
 
+After a configured OCR run completes, the workflow updates one reminder comment
+on that PR and mentions the PR author from `github.event.pull_request.user.login`.
+The reminder asks that contributor to address automated review findings before
+maintainers begin manual review; it is resolved per PR and is never hard-coded to
+one account.
+
 ## Maintainer setup
 
 Merge `.github/workflows/ocr-review.yml`, `.opencodereview/rule.json` and this guide
