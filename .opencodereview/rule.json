@@ -15,7 +15,7 @@
       "rule": "Review validation logic for false passes: skipped or empty cases counted as success, incorrect masks or token alignment, self-comparison instead of independent recomputation, lost rank failures, and weakened acceptance thresholds. Follow the applicable accuracy and invariance contracts separately. Report a missing test only when tied to a concrete changed behavior and failure case; do not ask for generic coverage."
     },
     {
-      "path": "{csrc,rl_engine/backends}/**",
+      "path": "{csrc,rl_engine/backends,rl_engine/kernels}/**",
       "merge_system_rule": false,
       "rule": "Check kernel and launch correctness: bounds and tail masks, tensor layouts and strides, dtype and accumulation precision, device capability guards, synchronization and stream ordering, temporary-buffer lifetimes, and forward/backward semantics. Trace changed reduction order or fusion to the relevant numerical contract and callers. Identify the concrete shape, mode or hardware that triggers a defect. Do not infer measured performance or bitwise parity from source alone."
     },
