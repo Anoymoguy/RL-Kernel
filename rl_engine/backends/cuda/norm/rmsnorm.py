@@ -218,6 +218,24 @@ def _check_gate_activation(activation: str) -> int:
     return _GATE_ACTIVATIONS[activation]
 
 
+def _require_cuda_gated() -> None:
+    """Guard shared by the gated op's constructor and its autograd forward.
+
+    Checks the two gated symbols and the same RMSNorm API version the plain op
+    requires, so a stale extension that exports the symbols with an older
+    signature is rejected instead of being called.
+    """
+    _require_cuda_symbols(
+        "Gated CUDA RMSNorm", "rmsnorm_gated_forward", "rmsnorm_gated_backward_dx"
+    )
+    api_version = getattr(_C, "rmsnorm_api_version", None)
+    if api_version != _RMSNORM_API_VERSION:
+        raise RuntimeError(
+            f"Gated CUDA RMSNorm requires rl_engine._C RMSNorm API version {_RMSNORM_API_VERSION} "
+            f"(loaded {api_version!r}). Rebuild the extension with csrc/cuda/norm/rmsnorm.cu."
+        )
+
+
 def _gate_activation_fp32(gate: torch.Tensor, activation: int) -> torch.Tensor:
     """act(gate) in fp32, matching the kernel's ``gate_activation``."""
     gate32 = gate.float()
@@ -253,15 +271,12 @@ class RMSNormGatedCuda(torch.autograd.Function):
           weight:  [H]
           activation: 0 = silu/swish, 1 = sigmoid
         """
+        _require_cuda_gated()
         assert x.is_cuda and weight.is_cuda and gate.is_cuda, "inputs must be CUDA tensors"
         assert x.is_contiguous() and weight.is_contiguous() and gate.is_contiguous()
         assert x.dim() == 2, "x must be [T, H]"
         assert weight.dim() == 1, "weight must be [H]"
         assert gate.shape == x.shape, "gate must match x"
-        assert _EXT_AVAILABLE and hasattr(
-            _C, "rmsnorm_gated_forward"
-        ), "Gated RMSNorm CUDA extension is unavailable. Rebuild with csrc/cuda/norm/rmsnorm.cu."
-
         y, rstd = _C.rmsnorm_gated_forward(
             x, weight, gate, float(eps), float(weight_offset), int(activation)
         )
@@ -344,9 +359,7 @@ class Qwen3NextRMSNormGatedCudaOp:
     def __init__(self, activation: str = "silu") -> None:
         _check_gate_activation(activation)
         self.activation = activation
-        _require_cuda_symbols(
-            "Gated CUDA RMSNorm", "rmsnorm_gated_forward", "rmsnorm_gated_backward_dx"
-        )
+        _require_cuda_gated()
 
     def __call__(self, x, weight, gate, *, eps=1e-6):
         return self.forward(x, weight, gate, eps=eps)
