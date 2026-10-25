@@ -38,6 +38,14 @@ NORM_OPS = {"qwen3_next_rms_norm": 2048, "rms_norm_gated": 128}
 
 
 def validate_norm_manifest(raw: Mapping[str, Any]) -> None:
+    """Validate a norm-operator manifest; every malformed manifest raises ``WorkloadError``."""
+    try:
+        _validate_norm_manifest(raw)
+    except (KeyError, TypeError) as exc:
+        raise WorkloadError(f"norm workload manifest is malformed: {exc!r}") from exc
+
+
+def _validate_norm_manifest(raw: Mapping[str, Any]) -> None:
     identity = raw["model_identity"]
     if identity["model_id"] != MODEL_ID or identity["revision"] != REVISION:
         raise WorkloadError("Qwen3-Next norm workload requires the pinned official checkpoint")

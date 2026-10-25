@@ -57,6 +57,17 @@ def test_norm_manifest_rejects_false_evidence_even_with_regenerated_hash(fault):
         validate_norm_manifest(raw)
 
 
+@pytest.mark.parametrize(
+    "missing", ["model_identity", "stochastic_policy", "primary_matrix", "fixtures", "capabilities"]
+)
+def test_norm_manifest_missing_block_raises_workload_error(missing):
+    """A required block removed from a norm manifest is a WorkloadError, not a KeyError."""
+    raw = copy.deepcopy(load_manifest(MANIFEST).raw)
+    del raw[missing]
+    with pytest.raises(WorkloadError, match="malformed"):
+        validate_norm_manifest(raw)
+
+
 def test_norm_dimension_gate_rejects_shrunk_workload():
     from rl_engine.validation.models.qwen3_next_workload import validate_norm_dimensions
 
