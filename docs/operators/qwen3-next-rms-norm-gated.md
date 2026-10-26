@@ -149,15 +149,15 @@ golden uses vLLM's convention. The same report re-measures the zero-centred op
 
 ## Existing implementations: measured batch invariance, accuracy, gates
 
-![rms_norm_gated vs existing implementations](https://raw.githubusercontent.com/fusheng-ji/RL-Kernel/6d6193d94a83266d5f5f62bb9d90fb3215716ee3/pr468/docs/usage/evidence/qwen3-next-norm-reuse-b200/rms_norm_gated.png)
+![rms_norm_gated vs existing implementations](https://raw.githubusercontent.com/fusheng-ji/RL-Kernel/692c4082f9fe6ca0f0dba37d277a4422dd689ba2/pr468/docs/usage/evidence/qwen3-next-norm-reuse-b200/rms_norm_gated.png)
 
 | Implementation | Batch-invariance checks | Forward correctly rounded | Worst grad err | Forward / fwd+bwd | C3/C4 gates |
 |---|---|---|---|---|---|
 | rl-kernel Qwen3NextRMSNormGatedCudaOp | yes (sampled) | 99.9989% | 2.4e-03 | 235 / 115293 µs | pass |
 | rl-kernel PyTorch reference | yes (sampled) | 99.9990% | 2.4e-03 | 772 / 1991 µs | — |
-| transformers 5.17.0 Qwen3NextRMSNormGated | yes (sampled) | 65.4748% | 5.6e-03 | 695 / 2093 µs | pass |
-| FLA 0.5.2 layernorm_gated.rmsnorm_fn | yes (sampled) | 99.9987% | 2.4e-03 | 177 / 882 µs | pass |
-| FLA 0.5.2 fused_norm_gate.rms_norm_gated | **no** (247 sub-batches) | 99.9987% | 2.4e-03 | 93 / 865 µs | pass |
+| transformers 5.17.0 Qwen3NextRMSNormGated | yes (sampled) | 65.4748% | 5.6e-03 | 695 / 2093 µs | C4 **fail** |
+| FLA 0.5.2 layernorm_gated.rmsnorm_fn | yes (sampled) | 99.9987% | 2.4e-03 | 177 / 882 µs | C4 **fail** |
+| FLA 0.5.2 fused_norm_gate.rms_norm_gated | **no** (247 sub-batches) | 99.9987% | 2.4e-03 | 93 / 865 µs | C4 **fail** |
 | vLLM 0.30.0 RMSNormGated.forward_cuda | **no** (3 rows, 3 sub-batches) | 99.9988% | — | 87 / — µs | — |
 
 Batch invariance is bitwise and covers three checks: every row computed alone vs inside full
@@ -171,9 +171,20 @@ including a final partial batch. These historical measurements have not been rer
 A "no" counts the rows, sub-batches or sweep cases that differed. Accuracy is against FP64 at the workload size; latency is the median on an otherwise
 idle B200. The C3/C4 column runs this repository's own gate scripts unchanged, with the CUDA
 candidate replaced by a subclass of this op whose forward and backward call the other library.
-The subclass keeps this op's FP32 `dweight` row contributions, so singleton-aggregate compares
-like with like.  [`rms_norm_gated.json`](https://github.com/fusheng-ji/RL-Kernel/blob/6d6193d94a83266d5f5f62bb9d90fb3215716ee3/pr468/docs/usage/evidence/qwen3-next-norm-reuse-b200/rms_norm_gated.json)
-was written from a clean tree at `abb56c2` by
+The subclass drops this op's FP32 `dweight` row contributions
+(`parameter_vjp_contributions_fp32`), so every C4 `dweight` check judges the `dweight` that
+library's own backward returns. C3 passes for every implementation. Each existing
+implementation fails C4 on `dweight` in the chunked-prefill and singleton-aggregate
+configurations (max |diff| up to 5.7e-6): both split the batch into several calls and the harness
+adds the per-call `dweight`, which each library returns in BF16; the split sum is not bitwise
+equal to the one-call `dweight`. This op passes because it declares FP32 per-row `dweight`
+contributions that the harness folds in a fixed order. An earlier run reported C4 passes for
+these libraries: the swapped op still inherited this op's row contributions, so those checks
+measured this op's `dweight`, not the library's. The gates were rerun on a B200 from a clean
+tree at `339bc3ff` ([`rms_norm_gated_gates.json`](https://github.com/fusheng-ji/RL-Kernel/blob/692c4082f9fe6ca0f0dba37d277a4422dd689ba2/pr468/docs/usage/evidence/qwen3-next-norm-reuse-b200/rms_norm_gated_gates.json),
+`--checks gates`); the other columns were not rerun.
+[`rms_norm_gated.json`](https://github.com/fusheng-ji/RL-Kernel/blob/692c4082f9fe6ca0f0dba37d277a4422dd689ba2/pr468/docs/usage/evidence/qwen3-next-norm-reuse-b200/rms_norm_gated.json), with its `contract_gates` taken from that
+rerun, was originally written from a clean tree at `abb56c2` by
 
 ```bash
 python tools/validation/models/qwen3_next_norm_reuse_check.py --op rms_norm_gated \

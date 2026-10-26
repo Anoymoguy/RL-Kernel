@@ -152,8 +152,9 @@ including a final partial batch. These historical measurements have not been rer
 A "no" counts the rows, sub-batches or sweep cases that differed. Accuracy is against FP64 at the workload size; latency is the median on an otherwise
 idle B200. The C3/C4 column runs this repository's own gate scripts unchanged, with the CUDA
 candidate replaced by a subclass of this op whose forward and backward call the other library.
-The subclass keeps this op's FP32 `dweight` row contributions, so singleton-aggregate compares
-like with like. The C3/C4 results for this op are in the gate table below. [`qwen3_next_rms_norm.json`](https://github.com/fusheng-ji/RL-Kernel/blob/6d6193d94a83266d5f5f62bb9d90fb3215716ee3/pr468/docs/usage/evidence/qwen3-next-norm-reuse-b200/qwen3_next_rms_norm.json)
+The subclass drops this op's FP32 `dweight` row contributions
+(`parameter_vjp_contributions_fp32`), so every C4 `dweight` check judges the `dweight` that
+library's own backward returns. The C3/C4 results for this op are in the gate table below. [`qwen3_next_rms_norm.json`](https://github.com/fusheng-ji/RL-Kernel/blob/6d6193d94a83266d5f5f62bb9d90fb3215716ee3/pr468/docs/usage/evidence/qwen3-next-norm-reuse-b200/qwen3_next_rms_norm.json)
 was originally written from a clean tree at `a66493c` by the command below. The
 Megatron `52fbcbc` result has been excluded from the reports, tables and figure:
 that revision computes `weight_eff` but uses the original `weight` in its forward
@@ -170,14 +171,23 @@ python tools/validation/models/qwen3_next_norm_reuse_check.py --op qwen3_next_rm
 ```
 
 
-The gate scripts support this op on this branch. Run unchanged at `88f59f7`, with the CUDA candidate swapped for each implementation ([`qwen3_next_rms_norm_gates.json`](https://github.com/fusheng-ji/RL-Kernel/blob/6d6193d94a83266d5f5f62bb9d90fb3215716ee3/pr468/docs/usage/evidence/qwen3-next-norm-reuse-b200/qwen3_next_rms_norm_gates.json), `tools/validation/models/qwen3_next_norm_reuse_check.py --op qwen3_next_rms_norm --checks gates`):
+The gate scripts support this op on this branch. Run unchanged on a B200 from a clean tree at `339bc3ff`, with the CUDA candidate swapped for each implementation ([`qwen3_next_rms_norm_gates.json`](https://github.com/fusheng-ji/RL-Kernel/blob/692c4082f9fe6ca0f0dba37d277a4422dd689ba2/pr468/docs/usage/evidence/qwen3-next-norm-reuse-b200/qwen3_next_rms_norm_gates.json), `tools/validation/models/qwen3_next_norm_reuse_check.py --op qwen3_next_rms_norm --checks gates`):
 
 | Implementation swapped into the CUDA candidate | C3 forward | C4 gradient (incl. singleton-aggregate) |
 |---|---|---|
 | rl-kernel Qwen3NextRMSNormCudaOp | pass | pass |
 | transformers 5.17.0 Qwen3NextRMSNorm | pass | **fail** |
-| Liger 0.8.4 RMSNorm, offset 1, gemma | pass | pass |
-| FLA 0.5.2 rms_norm, weight passed as 1 + w | pass | pass |
+| Liger 0.8.4 RMSNorm, offset 1, gemma | pass | **fail** |
+| FLA 0.5.2 rms_norm, weight passed as 1 + w | pass | **fail** |
+
+Each existing implementation fails C4 on `dweight` in the chunked-prefill and
+singleton-aggregate configurations (max |diff| 1.8e-4); transformers also fails `dx` under
+chunking and for one singleton sample. Both `dweight` configurations split the batch into
+several calls and the harness adds the per-call `dweight`, which each library returns in BF16;
+the split sum is not bitwise equal to the one-call `dweight`. This op passes because it declares
+FP32 per-row `dweight` contributions that the harness folds in a fixed order. An
+earlier run reported C4 passes for Liger and FLA: the swapped op still inherited this op's
+row contributions, so those checks measured this op's `dweight`, not the library's.
 
 ## Tests
 
