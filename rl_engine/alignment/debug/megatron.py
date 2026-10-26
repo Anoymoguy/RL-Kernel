@@ -5,12 +5,38 @@
 from __future__ import annotations
 
 from collections import defaultdict
+from dataclasses import replace
 from pathlib import Path
 from typing import Callable, Mapping
 
 import torch
 
 from .shards import ShardSet, TensorShard
+
+
+def _exact_checkpoint_shapes(value):
+    """Disable native padding/truncation without mutating provider metadata.
+
+    strict='raise_all' checks checkpoint keys, not allow_shape_mismatch.
+    Factories must retain their native merge function while tightening the
+    descriptors produced by their build function.
+    """
+    from megatron.core.dist_checkpointing.mapping import ShardedTensor, ShardedTensorFactory
+
+    if isinstance(value, ShardedTensor):
+        return replace(value, allow_shape_mismatch=False)
+    if isinstance(value, ShardedTensorFactory):
+        original_build = value.build_fn
+
+        def build(*args, **kwargs):
+            return _exact_checkpoint_shapes(original_build(*args, **kwargs))
+
+        return replace(value, build_fn=build)
+    if isinstance(value, Mapping):
+        return {key: _exact_checkpoint_shapes(child) for key, child in value.items()}
+    if isinstance(value, (tuple, list)):
+        return type(value)(_exact_checkpoint_shapes(child) for child in value)
+    return value
 
 
 def load_megatron_model(
@@ -45,7 +71,7 @@ def load_megatron_model(
         getattr(model, "sharded_state_dict", None)
     ):
         raise TypeError("provider must return a native module with sharded_state_dict()")
-    state = model.sharded_state_dict()
+    state = _exact_checkpoint_shapes(model.sharded_state_dict())
     requested = {model_key: state} if model_key is not None else state
     loaded = dist_checkpointing.load(
         requested,
@@ -60,21 +86,39 @@ def load_megatron_model(
 def megatron_weight_shards(model: torch.nn.Module) -> dict[str, ShardSet]:
     """Derive global ownership from actual native distributed-checkpoint metadata.
 
-    Handles stacked layer axes and native factories (e.g. SwiGLU splits). A
-    flattened optimizer/DP fragment or shape-mismatched padded parameter needs
-    a dedicated mapping; neither is guessed. Every tensor is read from the
-    actual model, not from checkpoint hashes or another worker's evidence.
+    Handles stacked layer axes and native factories (e.g. SwiGLU splits). The
+    complete declared global shape is observed, including any stored padding.
+    The checkpoint loader's allow_shape_mismatch flag is not evidence of actual
+    padding and does not authorize dropping rows here. Flattened optimizer/DP
+    fragments and logical unpadding need dedicated maps. Every tensor is read
+    from the actual model, not checkpoint hashes or another worker's evidence.
     """
-    from megatron.core.dist_checkpointing.mapping import ShardedTensor, ShardedTensorFactory
+    from megatron.core.dist_checkpointing.mapping import (
+        ShardedObject,
+        ShardedTensor,
+        ShardedTensorFactory,
+    )
 
     fragments = defaultdict(list)
 
     def visit(value, path):
         if isinstance(value, ShardedTensorFactory):
             visit(value.build(), path)
+        elif isinstance(value, ShardedObject):
+            # Native linear modules include an explicit no-extra-state marker.
+            # TE additionally uses a zero-length uint8 serialization buffer
+            # when quantizer state is absent. Never unpickle nonempty payloads.
+            empty_bytes = (
+                isinstance(value.data, torch.Tensor)
+                and value.data.dtype == torch.uint8
+                and value.data.ndim == 1
+                and value.data.numel() == 0
+            )
+            if value.data is not None and not empty_bytes:
+                raise ValueError(f"{path}: nonempty native extra state needs an explicit map")
         elif isinstance(value, ShardedTensor):
-            if value.flattened_range is not None or value.allow_shape_mismatch:
-                raise ValueError(f"{value.key}: flattened/padded weights need an explicit map")
+            if value.flattened_range is not None:
+                raise ValueError(f"{value.key}: flattened weights need an explicit map")
             if not isinstance(value.data, torch.Tensor):
                 raise ValueError(f"{value.key}: missing native weight data")
             local_shape = (1,) * value.prepend_axis_num + tuple(value.local_shape)

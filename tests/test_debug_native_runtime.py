@@ -7,6 +7,7 @@ from __future__ import annotations
 import copy
 import sys
 from functools import partial
+from dataclasses import dataclass
 from types import ModuleType, SimpleNamespace
 from unittest.mock import Mock
 
@@ -259,6 +260,9 @@ def native_modules(monkeypatch):
         )
     ]
     root.core, core.dist_checkpointing = core, checkpoint
+    mapping.ShardedTensor = type("ShardedTensor", (), {})
+    mapping.ShardedTensorFactory = type("ShardedTensorFactory", (), {})
+    mapping.ShardedObject = type("ShardedObject", (SimpleNamespace,), {})
     for module in (root, core, checkpoint, mapping):
         monkeypatch.setitem(sys.modules, module.__name__, module)
     return checkpoint, mapping
@@ -315,7 +319,7 @@ def test_megatron_stacked_axes_and_factories(monkeypatch):
                     global_offset=(layer, 0, 0),
                     prepend_axis_num=1,
                     flattened_range=None,
-                    allow_shape_mismatch=False,
+                    allow_shape_mismatch=True,
                 )
                 for layer in range(2)
             ]
@@ -327,6 +331,65 @@ def test_megatron_stacked_axes_and_factories(monkeypatch):
     assert actual.shape == (2, 2, 2)
     assert torch.equal(actual[0], torch.zeros(2, 2))
     assert torch.equal(actual[1], torch.ones(2, 2))
+
+
+def test_megatron_loader_disables_shape_resize_including_factories(tmp_path, monkeypatch):
+    checkpoint, mapping = native_modules(monkeypatch)
+
+    @dataclass
+    class NativeShard:
+        data: torch.Tensor
+        allow_shape_mismatch: bool = True
+
+    @dataclass
+    class Factory:
+        build_fn: object
+        merge_fn: object
+
+        def build(self):
+            return self.build_fn()
+
+    mapping.ShardedTensor, mapping.ShardedTensorFactory = NativeShard, Factory
+    model = torch.nn.Linear(2, 2)
+    descriptor = NativeShard(model.weight)
+    factory = Factory(lambda: {"weight": descriptor}, lambda values: values)
+    model.sharded_state_dict = lambda: {"direct": descriptor, "factory": factory}
+
+    def load(state, path, **kwargs):
+        assert not state["direct"].allow_shape_mismatch
+        assert not state["factory"].build()["weight"].allow_shape_mismatch
+        assert state["factory"].merge_fn is factory.merge_fn
+        assert state["direct"].data is model.weight
+        assert descriptor.allow_shape_mismatch
+        assert factory.build()["weight"].allow_shape_mismatch
+        return model.state_dict()
+
+    checkpoint.load = load
+    assert load_megatron_model(lambda: model, tmp_path) is model
+
+
+@pytest.mark.parametrize(
+    ("payload", "empty"),
+    [
+        (None, True),
+        (torch.empty(0, dtype=torch.uint8), True),
+        (torch.tensor([0], dtype=torch.uint8), False),
+        ({"fp8_history": torch.ones(2)}, False),
+    ],
+)
+def test_megatron_extra_state_must_be_explicitly_empty(monkeypatch, payload, empty):
+    _, mapping = native_modules(monkeypatch)
+    model = SimpleNamespace(
+        sharded_state_dict=lambda: {
+            "weight": torch.ones(2),
+            "extra": mapping.ShardedObject(data=payload),
+        }
+    )
+    if empty:
+        assert set(megatron_weight_shards(model)) == {"weight"}
+    else:
+        with pytest.raises(ValueError, match="nonempty native extra state"):
+            megatron_weight_shards(model)
 
 
 def physical_cache(order):

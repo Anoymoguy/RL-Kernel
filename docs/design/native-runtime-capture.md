@@ -41,6 +41,9 @@ weights = lambda: megatron_weight_shards(model)
 
 Loading is strict: extra optimizer/training envelope keys, missing weights,
 incompatible shapes and a provider without `sharded_state_dict()` are not ignored.
+Native `allow_shape_mismatch` loading is disabled on copied descriptors, including
+factory-built shards: strict key checks alone would still permit padding or
+truncation. Provider metadata and native factory merge functions are preserved.
 Use the matching native model checkpoint layout. Provider code is supplied by
 the application, never imported/executed from untrusted checkpoint metadata.
 Virtual pipeline model lists need an application provider/adapter; this helper
@@ -48,8 +51,13 @@ returns one native module and does not silently unwrap distributed wrappers.
 
 Weight inventory reads `ShardedTensor` global keys, offsets and prepended layer
 axes. Native `ShardedTensorFactory` transformations are expanded using their own
-build contract. Flattened optimizer/DP storage, shape-mismatched vocabulary
-padding and opaque extra state fail with an explicit mapping requirement.
+build contract. Inventory compares the complete declared global storage shape,
+including any padded vocabulary rows; a native `allow_shape_mismatch` loading
+flag alone is not evidence of actual padding. Logical unpadding, flattened
+optimizer/DP storage and opaque extra state require an explicit mapping.
+Explicit native `ShardedObject(data=None)` and TE's empty one-dimensional
+`uint8` no-quantizer-state buffer are allowed. Nonempty opaque extra state such
+as FP8 histories is not silently discarded or unpickled.
 
 ## TP/CP evidence and automatic ownership reconstruction
 
@@ -250,6 +258,55 @@ device availability. It must run on the target device before claiming GPU graph
 acceptance. CPU fake-replay tests do not substitute for it.
 
 These additions do not retroactively expand any previously recorded Qwen3
-Megatron/vLLM device acceptance. Live unfamiliar-model loading, distributed
-collectives, paged schedulers, MoE kernels and instrumented fused kernels still
-need target-stack acceptance with actual native models and checkpoints.
+Megatron/vLLM device acceptance. Distributed collectives, production paged
+schedulers, MoE kernels and other instrumented fused kernels still need their own
+target-stack acceptance. The bounded native device acceptance below is separate.
+
+### MI300X native acceptance — 2026-10-26
+
+Validated on one isolated **AMD Instinct MI300X VF** (`gfx942`), using PyTorch
+`2.12.0+rocm7.14.0a20260608`, HIP `7.14.60850`, Triton `3.7.0` and native Megatron
+checkout `1dcf0dafa884ad52ffb243625717a3471643e087`. The native Megatron checkout
+was on `PYTHONPATH`; no framework installation or existing model workspace was
+replaced.
+
+`tests/test_debug_device_runtime.py` adds seven **real-device** cases:
+
+| Cases | Observed result |
+| --- | --- |
+| Native Megatron GPTModel with GELU and SwiGLU, each 2 layers / hidden 16 / FFN 32 / 4 heads / vocab 32 / FP32 | Original native forward, distributed checkpoint save/load, actual weight inventory and loaded logits agree bitwise. Native SwiGLU checkpoint factories are exercised. Loading that checkpoint into vocab 64 is rejected instead of padding/truncating. |
+| Native module hooks captured into a HIP graph | Hooks are removed after graph construction; two replays still execute device probes, capture fresh values and preserve native outputs. |
+| Instrumented Triton affine/ReLU fused kernel, normal and controlled-fault cases | Intermediates come from one actual fused kernel launch, not a reference forward. The normal case agrees; the fault localizes to the native affine probe with equal observed inputs. |
+| Native GPU SGD and AdamW | Backward, accumulation, gradient clipping and optimizer updates preserve the unobserved reference run's parameter bits; paired evidence agrees. |
+
+The native checkpoint tests exposed and fixed two compatibility issues:
+
+1. `allow_shape_mismatch` is a **loader policy**, not proof that an actual tensor
+   contains unknown padding. Inventory now observes the complete declared shape,
+   while loading disables resizing on copied descriptors and factory outputs.
+2. Native `None` and TE's zero-length `uint8` extra-state markers mean no extra
+   payload. They are accepted; nonempty opaque payloads remain unsupported.
+
+Regression command:
+
+```bash
+python -m pytest \
+  tests/test_debug_native_runtime.py tests/test_debug_events.py \
+  tests/test_debug_discovery.py tests/test_debug_discovery_weights.py \
+  tests/test_alignment_diagnostics.py tests/test_consistency_debugger.py \
+  tests/test_module_debug_matrix.py tests/test_repro_launcher.py \
+  tests/test_repro_platform_alignment.py tests/test_rocm_repro_profile.py \
+  tests/test_rocm_e2e_ablation.py tests/test_debug_device_runtime.py -q -rs
+```
+
+Result on MI300X: **261 passed, no skips** (51 upstream dependency warnings).
+The existing real-device graph/event smoke tests also ran rather than skipping.
+On Windows/PyTorch 2.10 CPU the same suite produced **251 passed, 10 skipped**:
+nine device/compiler-gated cases and the existing Windows symlink-permission test.
+Ruff and `git diff --check` pass.
+
+This is correctness acceptance on small native workloads, **not** a production
+performance result, an arbitrary-architecture inference claim, or multi-GPU
+TP/CP/EP acceptance. It does not certify vLLM's real paged scheduler, arbitrary
+MoE dispatch kernels, opaque fused internals, FP8 metadata, Megatron distributed
+optimizer internals or every graph-capture configuration.
