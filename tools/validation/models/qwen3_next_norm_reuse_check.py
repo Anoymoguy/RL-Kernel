@@ -20,8 +20,8 @@ tree):
   ``tools/validation/operators/check_gradient_invariance.py``) with the norm manifest and the
   arguments ``ci/scripts/run_ws1_gtest.sh`` uses), unchanged, with the CUDA candidate replaced by a
   subclass of the rl-kernel op whose forward and backward call the other library. The subclass
-  keeps the op's ``parameter_vjp_contributions_fp32``, so the singleton-aggregate check
-  compares that library's ``dweight`` with the same FP32 row contributions.
+  drops the op's ``parameter_vjp_contributions_fp32``, so every C4 ``dweight`` comparison,
+  singleton-aggregate included, uses the ``dweight`` that library's own backward returns.
 
     python tools/validation/models/qwen3_next_norm_reuse_check.py --op qwen3_next_rms_norm \\
         --out docs/usage/evidence/qwen3-next-norm-reuse-b200/qwen3_next_rms_norm.json \\
@@ -454,12 +454,43 @@ def accuracy_latency(op: str, cand: dict[str, Any], quick: bool) -> dict[str, An
 # --------------------------------------------------------------------------- #
 
 
+def _swapped_operator(op: str, fn):
+    """The rl-kernel CUDA op with its forward and backward replaced by ``fn``.
+
+    The C4 harness folds ``parameter_vjp_contributions_fp32`` in place of the autograd
+    ``dweight`` whenever an op declares it. Those contributions come from the rl-kernel
+    kernel, so an inherited hook would let C4 judge rl-kernel's ``dweight`` instead of the
+    other library's. Clearing it makes C4 use ``dweight`` from the library's own backward.
+    """
+
+    from rl_engine.backends.cuda.norm import rmsnorm as R
+
+    if op == "qwen3_next_rms_norm":
+
+        class Swapped(R.Qwen3NextRMSNormCudaOp):
+            parameter_vjp_contributions_fp32 = None
+
+            def forward(self, x, weight, *, eps=EPS):
+                return fn(x.reshape(-1, x.shape[-1]), weight).view_as(x)
+
+    else:
+
+        class Swapped(R.Qwen3NextRMSNormGatedCudaOp):
+            parameter_vjp_contributions_fp32 = None
+
+            def __call__(self, x, weight, gate, *, eps=EPS):
+                return self.forward(x, weight, gate, eps=eps)
+
+            def forward(self, x, weight, gate, *, eps=EPS):
+                return fn(x, gate, weight)
+
+    return Swapped()
+
+
 def _gate_child(which: str, op: str, impl: str) -> None:
     """Run the canonical C3/C4 CLI with the CUDA candidate replaced by ``impl``."""
 
     import importlib.util
-
-    from rl_engine.backends.cuda.norm import rmsnorm as R
 
     path = REPO_ROOT / "tools/validation/operators" / f"check_{which}_invariance.py"
     spec = importlib.util.spec_from_file_location("gate", path)
@@ -482,25 +513,12 @@ def _gate_child(which: str, op: str, impl: str) -> None:
     spec.loader.exec_module(gate)
     if impl != "rl_kernel":
         fn = candidates(op)[impl]["fn"]
-        if op == "qwen3_next_rms_norm":
-
-            class Swapped(R.Qwen3NextRMSNormCudaOp):
-                def forward(self, x, weight, *, eps=EPS):
-                    return fn(x.reshape(-1, x.shape[-1]), weight).view_as(x)
-
-        else:
-
-            class Swapped(R.Qwen3NextRMSNormGatedCudaOp):
-                def __call__(self, x, weight, gate, *, eps=EPS):
-                    return self.forward(x, weight, gate, eps=eps)
-
-                def forward(self, x, weight, gate, *, eps=EPS):
-                    return fn(x, gate, weight)
-
         original = gate.load_adapter_operator
 
         def load_adapter_operator(op_name, candidate):
-            return Swapped() if candidate == "cuda" else original(op_name, candidate)
+            return (
+                _swapped_operator(op, fn) if candidate == "cuda" else original(op_name, candidate)
+            )
 
         gate.load_adapter_operator = load_adapter_operator
     gate.main()

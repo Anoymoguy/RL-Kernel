@@ -123,3 +123,52 @@ def test_full_batch_sub_batches_visit_previously_skipped_rows(monkeypatch, op, d
     assert check["fwd_differ"] == (2 if defect == "forward" else 0)
     assert check["rowgrad_differ"] == (2 if defect == "gradient" else 0)
     assert result["batch_invariant"] is (defect is None)
+
+
+@pytest.mark.parametrize("op", ["qwen3_next_rms_norm", "rms_norm_gated"])
+def test_swapped_operator_c4_uses_the_library_dweight(monkeypatch, op):
+    """C4 must judge the swapped library's dweight, not rl-kernel's row contributions."""
+    from rl_engine.backends.cuda.norm import rmsnorm as R
+    from rl_engine.config.workload import load_manifest, singleton_aggregate_plan
+    from rl_engine.validation.operators.forward_invariance import build_config_matrix
+    from rl_engine.validation.operators.gradient_adapters import make_gradient_runner
+
+    # Constructing the subclass needs the compiled extension only for the hook being removed.
+    monkeypatch.setattr(R, "_require_cuda_rmsnorm", lambda: None)
+    monkeypatch.setattr(R, "_require_cuda_gated", lambda: None)
+    library_dweights = []
+
+    def library(x, *rest):
+        weight = rest[-1]
+        weight.register_hook(lambda grad: library_dweights.append(grad.float()))
+        out = x * (1.0 + weight)
+        return out * torch.sigmoid(rest[0]) if len(rest) == 2 else out
+
+    swapped = reuse._swapped_operator(op, library)
+    assert not callable(getattr(swapped, "parameter_vjp_contributions_fp32", None))
+
+    configs = {config.config_id: config for config in build_config_matrix(load_manifest())}
+    canonical = configs["BN/full"]
+    run = make_gradient_runner(
+        op,
+        swapped,
+        device=torch.device("cpu"),
+        dtype=torch.float32,
+        reference=True,
+        hidden=8,
+        head_dim=8,
+    )
+    for config_id in ("BN/full", "BN/chunked", "B1-singleton_aggregate/full/s0"):
+        library_dweights.clear()
+        grads = run(
+            configs[config_id],
+            active_token_denominator=canonical.logical_batch.active_token_count(),
+            loss_reduction="sum_over_active_tokens_then_optional_mean_by_active_count",
+            aggregation_order=singleton_aggregate_plan(canonical.logical_batch).aggregation_order,
+        )
+        assert "__parameter_contributions__" not in grads
+        assert library_dweights
+        expected = library_dweights[0]
+        for grad in library_dweights[1:]:
+            expected = expected + grad
+        assert torch.equal(grads["dweight"], expected)
