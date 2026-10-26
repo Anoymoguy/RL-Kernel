@@ -21,6 +21,8 @@ def inverse_map_expert_output(
     inputs: MoEOutputCombineInputs,
     *,
     num_tokens: int,
+    num_experts: int | None = None,
+    expected_mapping_run_id: str | None = None,
 ) -> torch.Tensor:
     """Restore shuffled expert slots to ``[token, slot, hidden]`` order.
 
@@ -32,10 +34,15 @@ def inverse_map_expert_output(
 
     if not isinstance(num_tokens, int) or num_tokens <= 0:
         raise MoEOutputCombineContractError("num_tokens must be a positive integer")
+    if num_experts is not None and (not isinstance(num_experts, int) or num_experts <= 0):
+        raise MoEOutputCombineContractError("num_experts must be a positive integer")
     inputs.validate(plan)
+    if expected_mapping_run_id is not None and inputs.mapping_run_id != expected_mapping_run_id:
+        raise MoEOutputCombineContractError("mapping run id disagrees with the expected request")
 
     token_indices = inputs.token_indices.detach().cpu().tolist()
     slot_indices = inputs.slot_indices.detach().cpu().tolist()
+    expert_indices = inputs.expert_indices.detach().cpu().tolist()
     expected_slots = num_tokens * plan.top_k
     if len(token_indices) != expected_slots:
         raise MoEOutputCombineContractError(
@@ -43,9 +50,12 @@ def inverse_map_expert_output(
         )
 
     order: dict[tuple[int, int], int] = {}
-    for row, (token, slot) in enumerate(zip(token_indices, slot_indices, strict=True)):
+    for row, (token, slot, expert) in enumerate(
+        zip(token_indices, slot_indices, expert_indices, strict=True)
+    ):
         token = int(token)
         slot = int(slot)
+        expert = int(expert)
         if token < 0 or token >= num_tokens:
             raise MoEOutputCombineContractError(
                 f"token index {token} is outside [0, {num_tokens})"
@@ -53,6 +63,10 @@ def inverse_map_expert_output(
         if slot < 0 or slot >= plan.top_k:
             raise MoEOutputCombineContractError(
                 f"slot index {slot} is outside [0, {plan.top_k})"
+            )
+        if num_experts is not None and (expert < 0 or expert >= num_experts):
+            raise MoEOutputCombineContractError(
+                f"expert index {expert} is outside [0, {num_experts})"
             )
         key = (token, slot)
         if key in order:
@@ -83,10 +97,18 @@ def inverse_mapping_provenance(
     inputs: MoEOutputCombineInputs,
     *,
     num_tokens: int,
+    num_experts: int | None = None,
+    expected_mapping_run_id: str | None = None,
 ) -> dict[str, Any]:
     """Return provenance for a successful inverse-map reference execution."""
 
-    output = inverse_map_expert_output(plan, inputs, num_tokens=num_tokens)
+    output = inverse_map_expert_output(
+        plan,
+        inputs,
+        num_tokens=num_tokens,
+        num_experts=num_experts,
+        expected_mapping_run_id=expected_mapping_run_id,
+    )
     provenance = inputs.provenance(plan)
     provenance.update(
         {

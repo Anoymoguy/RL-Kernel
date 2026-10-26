@@ -11,7 +11,7 @@ from rl_engine.contracts.operators.moe import (
 from rl_engine.reference.moe import inverse_map_expert_output, inverse_mapping_provenance
 
 
-def _request(*, index_dtype=torch.int64, expert_output=None, tokens=None, slots=None):
+def _request(*, index_dtype=torch.int64, expert_output=None, tokens=None, slots=None, run_id="run-1"):
     plan = MoEOutputCombinePlan(
         top_k=2,
         hidden_size=3,
@@ -32,6 +32,7 @@ def _request(*, index_dtype=torch.int64, expert_output=None, tokens=None, slots=
         expert_indices=torch.tensor([4, 4, 5, 5], dtype=index_dtype),
         slot_indices=torch.tensor(slots, dtype=index_dtype),
         routing_weights=torch.ones(4, dtype=torch.float32),
+        mapping_run_id=run_id,
     )
     return plan, inputs
 
@@ -39,7 +40,7 @@ def _request(*, index_dtype=torch.int64, expert_output=None, tokens=None, slots=
 def test_inverse_mapping_restores_token_major_slot_order():
     plan, inputs = _request()
 
-    restored = inverse_map_expert_output(plan, inputs, num_tokens=2)
+    restored = inverse_map_expert_output(plan, inputs, num_tokens=2, num_experts=8)
 
     expected = torch.tensor(
         [[[0, 1, 2], [10, 11, 12]], [[20, 21, 22], [30, 31, 32]]],
@@ -58,7 +59,7 @@ def test_inverse_mapping_supports_non_contiguous_expert_output_and_int32_indices
         slots=[0, 0, 1, 1],
     )
 
-    restored = inverse_map_expert_output(plan, inputs, num_tokens=2)
+    restored = inverse_map_expert_output(plan, inputs, num_tokens=2, num_experts=8)
 
     assert restored.shape == (2, 2, 3)
     assert restored.is_contiguous()
@@ -83,8 +84,32 @@ def test_inverse_mapping_rejects_invalid_mapping(tokens, slots, num_tokens, mess
 def test_inverse_mapping_provenance_records_canonical_layout():
     plan, inputs = _request()
 
-    provenance = inverse_mapping_provenance(plan, inputs, num_tokens=2)
+    provenance = inverse_mapping_provenance(
+        plan, inputs, num_tokens=2, num_experts=8, expected_mapping_run_id="run-1"
+    )
 
     assert provenance["inverse_mapping"] == "token_major_slot_minor"
     assert provenance["restored_shape"] == [2, 2, 3]
+
+
+def test_inverse_mapping_rejects_wrong_run_id_and_expert_overflow():
+    plan, inputs = _request()
+
+    with pytest.raises(MoEOutputCombineContractError, match="run id"):
+        inverse_map_expert_output(
+            plan, inputs, num_tokens=2, expected_mapping_run_id="other-run"
+        )
+
+    bad_expert = inputs.expert_indices.clone()
+    bad_expert[0] = 8
+    bad_inputs = inputs.__class__(
+        expert_output=inputs.expert_output,
+        token_indices=inputs.token_indices,
+        expert_indices=bad_expert,
+        slot_indices=inputs.slot_indices,
+        routing_weights=inputs.routing_weights,
+        mapping_run_id=inputs.mapping_run_id,
+    )
+    with pytest.raises(MoEOutputCombineContractError, match="expert index"):
+        inverse_map_expert_output(plan, bad_inputs, num_tokens=2, num_experts=8)
 

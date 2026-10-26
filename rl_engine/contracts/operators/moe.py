@@ -166,6 +166,7 @@ class MoEOutputCombineInputs:
     shared_output: torch.Tensor | None = None
     residual: torch.Tensor | None = None
     mapping_schema_version: str = "p4-token-slot.v1"
+    mapping_run_id: str = "unknown"
     producer_backend: str = "unknown"
     producer_build_fingerprint: str = "unknown"
     num_tokens: int | None = None
@@ -203,6 +204,8 @@ class MoEOutputCombineInputs:
                 raise MoEOutputCombineContractError(f"{name} dtype disagrees with the plan")
         if self.mapping_schema_version != plan.mapping_schema_version:
             raise MoEOutputCombineContractError("mapping schema version disagrees with the plan")
+        if not isinstance(self.mapping_run_id, str) or not self.mapping_run_id.strip():
+            raise MoEOutputCombineContractError("mapping_run_id must not be empty")
         if self.num_tokens is not None and (
             isinstance(self.num_tokens, bool) or not isinstance(self.num_tokens, int) or self.num_tokens <= 0
         ):
@@ -277,6 +280,7 @@ class MoEOutputCombineInputs:
             "plan_version": plan.plan_version,
             "plan_fingerprint": plan.fingerprint,
             "mapping_schema_version": plan.mapping_schema_version,
+            "mapping_run_id": self.mapping_run_id,
             "top_k": plan.top_k,
             "hidden_size": plan.hidden_size,
             "num_slots": int(self.expert_output.shape[0]),
