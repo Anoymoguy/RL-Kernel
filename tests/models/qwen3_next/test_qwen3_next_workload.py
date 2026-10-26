@@ -4,6 +4,7 @@
 """The norm workload cannot stand in for Dense or full-checkpoint evidence."""
 
 import copy
+import json
 from pathlib import Path
 
 import pytest
@@ -102,3 +103,17 @@ def test_norm_adapters_are_required_by_the_norm_manifest_only():
     assert norm == {"qwen3_next_rms_norm", "rms_norm_gated"}
     dense = {spec.op_name for spec in required_gradient_adapters(load_manifest())}
     assert dense.isdisjoint(norm)
+
+
+@pytest.mark.parametrize(
+    "source,scope",
+    [(MANIFEST, "qwen3-next-norm-operators"), (None, "qwen3_next_norm_operator")],
+)
+def test_unknown_manifest_scope_is_rejected(tmp_path, source, scope):
+    """A typo'd scope is a scope error, not a Dense fingerprint mismatch or a silent Dense."""
+    raw = copy.deepcopy(load_manifest(source).raw)
+    raw["scope"] = scope
+    path = tmp_path / "manifest.json"
+    path.write_text(json.dumps(raw))
+    with pytest.raises(WorkloadError, match="unknown manifest scope"):
+        load_manifest(path)
