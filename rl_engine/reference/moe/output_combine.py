@@ -30,6 +30,19 @@ class PreparedMoEOutputCombine:
     provenance: MappingProxyType
 
 
+class MoEOutputCombineReferenceOp:
+    """Semantic-registry adapter for the validated P6 boundary."""
+
+    backend_id = "rlkernel.reference.moe_output_combine.v1"
+
+    def prepare(
+        self,
+        plan: MoEOutputCombinePlan,
+        inputs: MoEOutputCombineInputs,
+    ) -> PreparedMoEOutputCombine:
+        return prepare_output_combine(plan, inputs)
+
+
 def prepare_output_combine(
     plan: MoEOutputCombinePlan,
     inputs: MoEOutputCombineInputs,
@@ -69,5 +82,9 @@ def prepare_output_combine(
     )
 
 
-__all__ = ["PreparedMoEOutputCombine", "prepare_output_combine"]
+__all__ = [
+    "MoEOutputCombineReferenceOp",
+    "PreparedMoEOutputCombine",
+    "prepare_output_combine",
+]
 

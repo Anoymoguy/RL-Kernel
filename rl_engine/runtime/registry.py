@@ -205,6 +205,27 @@ class OpBackend(Enum, metaclass=_KernelEnumMeta):
 def _default_semantic_descriptors() -> tuple[OperatorBackendDescriptor, ...]:
     return (
         OperatorBackendDescriptor(
+            semantic_op="moe_output_combine",
+            backend_id="rlkernel.reference.moe_output_combine.v1",
+            supported_targets=frozenset({"rollout", "training"}),
+            supported_devices=frozenset({"cpu", "cuda", "rocm"}),
+            supported_dtypes=frozenset({"float32", "bfloat16", "float16"}),
+            supported_topologies={"*": "*"},
+            determinism_or_alignment_properties={
+                "algorithm": "validated_p6_request_preparation",
+                "deterministic": True,
+                "strict_observable": True,
+                "inverse_mapping": "deferred_to_issue_52",
+                "reduction": "deferred_to_issue_53",
+            },
+            lifecycle=OperatorLifecycle.PROCESS,
+            implementation_class_or_factory=(
+                "rl_engine.reference.moe.output_combine.MoEOutputCombineReferenceOp"
+            ),
+            fallback_policy=OperatorFallbackPolicy.ERROR,
+            version_or_build_fingerprint="MoEOutputCombineReferenceOp-p6-contract-v1",
+        ),
+        OperatorBackendDescriptor(
             semantic_op="selected_logprob",
             backend_id="rlkernel.reference_logp",
             supported_targets=frozenset({"rollout", "training"}),
