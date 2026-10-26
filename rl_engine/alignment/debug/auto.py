@@ -13,7 +13,25 @@ from typing import Any, Callable, Iterable, Mapping, Sequence
 import torch
 
 from .core import fingerprint
-from .events import EventCapture
+from .events import EventCapture, encode_tree
+
+
+def _inventory_identity(value):
+    """Local immutable check; global equality is verified by sharded events."""
+    if isinstance(value, torch.Tensor):
+        return fingerprint(value)
+    if isinstance(value, dict):
+        return {key: _inventory_identity(child) for key, child in value.items()}
+    if isinstance(value, (tuple, list)):
+        return [_inventory_identity(child) for child in value]
+    return value
+
+
+def _weight_specs():
+    return [
+        {"id": f"weights.{stage}", "module": "weights", "stage": stage}
+        for stage in ("before", "after")
+    ]
 
 
 @dataclass(frozen=True)
@@ -105,6 +123,7 @@ def prepare_auto(
     bindings: Mapping[str, ModuleBoundary] | None = None,
     capture_root: bool = True,
     ranks: Mapping[str, Sequence[int]] | None = None,
+    sharded_weights: bool = False,
 ) -> list[str]:
     positions = list(positions)
     if not positions or any(type(p) is not int or p < 0 for p in positions):
@@ -112,7 +131,7 @@ def prepare_auto(
     selected = _bindings(model, include, exclude, max_modules, bindings)
     EventCapture.prepare(
         directory,
-        _specs(selected, capture_root),
+        _specs(selected, capture_root) + (_weight_specs() if sharded_weights else []),
         scope=scope,
         ranks=ranks,
         coverage={
@@ -123,6 +142,7 @@ def prepare_auto(
             else "automatic leaves",
             "max_modules": max_modules,
             "positions": positions,
+            "sharded_weights": sharded_weights,
             "claim": "declared observed boundaries only, not every operation in the model",
         },
     )
@@ -155,6 +175,7 @@ class AutoCapture:
         weights: Callable[[], Mapping[str, torch.Tensor] | Iterable[tuple[str, torch.Tensor]]]
         | None = None,
         rank: int = 0,
+        sharded_weights: Callable[[], Mapping[str, Any]] | None = None,
     ):
         self.capture = EventCapture(directory, side, identity, rank=rank)
         self.model, self.positions = model, list(positions)
@@ -162,6 +183,14 @@ class AutoCapture:
             raise ValueError("capture positions differ from prepared scope")
         self.bindings = _bindings(model, include, exclude, max_modules, bindings)
         expected = {spec["id"] for spec in _specs(self.bindings, capture_root)}
+        if sharded_weights is not None:
+            expected.update(spec["id"] for spec in _weight_specs())
+        if (sharded_weights is not None) != self.capture.manifest["coverage"].get(
+            "sharded_weights", False
+        ):
+            raise ValueError("sharded weight capture differs from prepared scope")
+        if sharded_weights is not None and weights is not None:
+            raise ValueError("choose a replicated or sharded weight reader, not both")
         if expected != set(self.capture.specs):
             raise ValueError("semantic boundary coverage differs from manifest")
         self.capture_root, self.root_inputs, self.root_outputs = (
@@ -170,6 +199,7 @@ class AutoCapture:
             root_outputs,
         )
         self.weights = weights or model.state_dict
+        self.sharded_weights = sharded_weights
         self.handles: list[Any] = []
         self.frame: str | None = None
         self.frame_count = 0
@@ -218,10 +248,18 @@ class AutoCapture:
         if self.started:
             raise RuntimeError("AutoCapture sessions are single-use")
         self.started = True
-        self.initial_weights = self._weights()
-        self.capture.identity["observed_weights"] = self.initial_weights
+        if self.sharded_weights is None:
+            self.initial_weights = self._weights()
+            self.capture.identity["observed_weights"] = self.initial_weights
+        else:
+            values = self.sharded_weights()
+            if not isinstance(values, Mapping) or not values:
+                raise ValueError("sharded weight reader must return a nonempty mapping")
+            self.initial_weights = _inventory_identity(encode_tree(values))
         self.capture.__enter__()
         try:
+            if self.sharded_weights is not None:
+                self.capture.record("weights.before", values, frame="weights")
             self.handles.append(
                 self.model.register_forward_pre_hook(self._root_before, with_kwargs=True)
             )
@@ -281,7 +319,13 @@ class AutoCapture:
         try:
             if self.frame is not None or any(self.stacks.values()):
                 self.capture.errors.append("unfinished forward invocation")
-            if self._weights() != self.initial_weights:
+            if self.sharded_weights is None:
+                final_weights = self._weights()
+            else:
+                values = self.sharded_weights()
+                final_weights = _inventory_identity(encode_tree(values))
+                self.capture.record("weights.after", values, frame="weights")
+            if final_weights != self.initial_weights:
                 self.capture.errors.append("actual weights changed during observation")
         except Exception as error:
             self.capture.errors.append(f"weight verification failed: {error}")

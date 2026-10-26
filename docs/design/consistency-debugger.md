@@ -119,6 +119,20 @@ and offline conclusions; unchanged sampling/topology flexibility and no
 rollout-logprob reuse. Framework integration tests and device smoke results
 must be reported separately from CPU synthetic tests.
 
+## Native runtime extensions
+
+The portable API now also exposes native Megatron provider/checkpoint loading,
+metadata-derived TP/CP tensor ownership, logical paged KV capture, deferred
+CUDA/HIP graph probes, MoE route capture, a fused-kernel debug-output protocol,
+and backward/optimizer observation. See
+[Native runtime capture extensions](native-runtime-capture.md) for executable
+integration patterns, required native contracts and validation limits.
+
+These opt-in APIs do not make the `rlk discover` TP1 eager launcher universally
+distributed, infer arbitrary unfamiliar architectures, or expose opaque fused
+internals without kernel instrumentation. Historical acceptance results below
+retain their original scope.
+
 ## Portable capture API
 
 An existing live adapter needs only the CLI command. A new model/application

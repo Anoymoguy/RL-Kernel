@@ -19,6 +19,8 @@ import torch
 
 from .core import atomic_save, bitdiff, snapshot
 from .evidence import IDENTITIES, diagnosis
+from .shards import ShardSet, TensorShard, encode_shards, merge_shards
+from .routing import RoutedTensor, encode_routes, merge_routes
 
 EVENT_SCHEMA = "rlkernel.events.v1"
 SIDES = ("training", "rollout")
@@ -54,6 +56,12 @@ class LogicalTensor:
 
 
 def encode_tree(value: Any) -> dict[str, Any]:
+    if isinstance(value, RoutedTensor):
+        return encode_routes(value)
+    if isinstance(value, TensorShard):
+        return encode_shards([value])
+    if isinstance(value, ShardSet):
+        return encode_shards(value.shards)
     if isinstance(value, LogicalTensor):
         if value.value.ndim != 2:
             raise ValueError("logical tensors require explicit [rows, features] views")
@@ -241,6 +249,10 @@ def _merge_trees(trees: list[dict[str, Any]]) -> dict[str, Any]:
     kind = first["kind"]
     if any(tree["kind"] != kind for tree in trees):
         raise ValueError("replica value structures differ")
+    if kind == "sharded":
+        return merge_shards(trees)
+    if kind == "routed":
+        return merge_routes(trees)
     if kind == "logical":
         widths = {tree["width"] for tree in trees}
         dtypes = {tree["value"].dtype for tree in trees}
@@ -492,7 +504,7 @@ def analyze_events(directory: Path) -> dict[str, Any]:
         "scope": manifest["scope"],
         "coverage": {
             **manifest["coverage"],
-            "ordering": "paired observed eager event order; not a causal DAG",
+            "ordering": "paired observed event order; not a causal DAG",
             "hidden_state": "cache/mask/fused internals require explicit bindings",
         },
         "first_divergence": first,
