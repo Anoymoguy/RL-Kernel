@@ -17,7 +17,7 @@ from rl_engine.reference.moe import (
     prepare_output_combine,
 )
 from rl_engine.runtime.registry import kernel_registry
-from rl_engine.runtime.semantic_registry import OperatorRequirements
+from rl_engine.runtime.semantic_registry import OperatorRequirements, OperatorResolutionError
 
 
 
@@ -78,6 +78,11 @@ def test_plan_rejects_non_fixed_merge_order():
         _plan(merge_order=(1.0, 0.0))
 
 
+def test_plan_rejects_unsupported_output_dtype():
+    with pytest.raises(MoEOutputCombineContractError, match="output_dtype"):
+        _plan(output_dtype="float8_e4m3fn")
+
+
 def test_inputs_validate_against_plan():
     plan = _plan()
     inputs = _inputs(plan)
@@ -86,6 +91,7 @@ def test_inputs_validate_against_plan():
     provenance = inputs.provenance(plan)
     assert provenance["semantic_op"] == "moe_output_combine"
     assert provenance["plan_fingerprint"] == plan.fingerprint
+    assert provenance["mapping_run_id_verified"] is False
 
 
 def test_weights_must_be_explicitly_owned_by_one_boundary():
@@ -139,10 +145,27 @@ def test_auxiliary_outputs_require_explicit_token_count():
         ).validate(plan)
 
 
+def test_declared_token_count_requires_complete_slot_domain():
+    plan = _plan()
+    with pytest.raises(
+        MoEOutputCombineContractError,
+        match=r"slot count must equal num_tokens \* top_k",
+    ):
+        _inputs(plan, num_tokens=3).validate(plan)
+
+
 def test_external_residual_uses_declared_token_shape():
     plan = _plan(residual_mode="external")
+    base = {
+        "expert_output": torch.zeros(6, plan.hidden_size, dtype=torch.bfloat16),
+        "token_indices": torch.tensor([0, 0, 1, 1, 2, 2], dtype=torch.int64),
+        "expert_indices": torch.tensor([0, 1, 0, 1, 0, 1], dtype=torch.int64),
+        "slot_indices": torch.tensor([0, 1, 0, 1, 0, 1], dtype=torch.int64),
+        "routing_weights": torch.ones(6, dtype=torch.float32),
+    }
     valid = _inputs(
         plan,
+        **base,
         num_tokens=3,
         residual=torch.zeros(3, plan.hidden_size, dtype=torch.bfloat16),
     )
@@ -151,11 +174,12 @@ def test_external_residual_uses_declared_token_shape():
     with pytest.raises(MoEOutputCombineContractError, match="residual must have shape"):
         _inputs(
             plan,
+            **base,
             num_tokens=3,
             residual=torch.zeros(2, plan.hidden_size, dtype=torch.bfloat16),
         ).validate(plan)
     with pytest.raises(MoEOutputCombineContractError, match="residual is required"):
-        _inputs(plan, num_tokens=3).validate(plan)
+        _inputs(plan, **base, num_tokens=3).validate(plan)
     with pytest.raises(MoEOutputCombineContractError, match="residual must be omitted"):
         excluded = _plan()
         _inputs(
@@ -361,7 +385,11 @@ def test_p6_reference_backend_can_be_resolved_and_instantiated():
         semantic_op="moe_output_combine",
         requested_backend="rlkernel.reference.moe_output_combine.v1",
         target="training",
-        requirements=OperatorRequirements(device="cpu", dtype="bfloat16"),
+        requirements=OperatorRequirements(
+            device="cpu",
+            dtype="bfloat16",
+            topology={"world_size": 1, "sharding": "unsharded"},
+        ),
     )
     instance = session.instantiate(resolution)
 
@@ -371,3 +399,18 @@ def test_p6_reference_backend_can_be_resolved_and_instantiated():
     inputs = replace(inputs, num_tokens=2)
     prepared = instance.prepare(plan, inputs)
     assert prepared.provenance["plan_fingerprint"] == plan.fingerprint
+
+
+def test_p6_reference_backend_rejects_distributed_topology():
+    session = kernel_registry.semantic.session()
+    with pytest.raises(OperatorResolutionError, match="topology"):
+        session.resolve(
+            semantic_op="moe_output_combine",
+            requested_backend="rlkernel.reference.moe_output_combine.v1",
+            target="training",
+            requirements=OperatorRequirements(
+                device="cpu",
+                dtype="bfloat16",
+                topology={"world_size": 2, "sharding": "unsharded"},
+            ),
+        )

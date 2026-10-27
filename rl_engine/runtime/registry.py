@@ -210,7 +210,12 @@ def _default_semantic_descriptors() -> tuple[OperatorBackendDescriptor, ...]:
             supported_targets=frozenset({"training"}),
             supported_devices=frozenset({"cpu"}),
             supported_dtypes=frozenset({"float32", "bfloat16", "float16"}),
-            supported_topologies={"*": "*"},
+            supported_topologies={
+                "training": {
+                    "world_size": (1,),
+                    "sharding": ("unsharded",),
+                }
+            },
             determinism_or_alignment_properties={
                 "algorithm": "validated_p6_request_preparation_only",
                 "deterministic": True,

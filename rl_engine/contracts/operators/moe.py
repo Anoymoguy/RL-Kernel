@@ -108,6 +108,10 @@ class MoEOutputCombinePlan:
             raise MoEOutputCombineContractError("P6 routing weights must be float32")
         if self.accumulation_dtype != "float32":
             raise MoEOutputCombineContractError("P6 accumulation must be float32")
+        if self.output_dtype not in {"float32", "bfloat16", "float16"}:
+            raise MoEOutputCombineContractError(
+                "output_dtype must be float32, bfloat16 or float16"
+            )
         if not isinstance(self.expert_weight_applied, bool):
             raise MoEOutputCombineContractError("expert_weight_applied must be a bool")
         if self.shared_expert_mode not in {"excluded", "separate"}:
@@ -222,6 +226,10 @@ class MoEOutputCombineInputs:
         pairs = torch.stack((self.token_indices, self.slot_indices), dim=1)
         if torch.unique(pairs, dim=0).shape[0] != num_slots:
             raise MoEOutputCombineContractError("duplicate token and slot pairs are not allowed")
+        if self.num_tokens is not None and num_slots != self.num_tokens * plan.top_k:
+            raise MoEOutputCombineContractError(
+                "expert output slot count must equal num_tokens * top_k"
+            )
         if not torch.isfinite(self.expert_output).all():
             raise MoEOutputCombineContractError("expert_output must contain only finite values")
 
@@ -281,6 +289,7 @@ class MoEOutputCombineInputs:
             "plan_fingerprint": plan.fingerprint,
             "mapping_schema_version": plan.mapping_schema_version,
             "mapping_run_id": self.mapping_run_id,
+            "mapping_run_id_verified": False,
             "top_k": plan.top_k,
             "hidden_size": plan.hidden_size,
             "num_slots": int(self.expert_output.shape[0]),
