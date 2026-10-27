@@ -109,12 +109,12 @@ def test_schema_and_shape_mismatches_fail_closed():
 
 def test_auxiliary_outputs_require_explicit_token_count():
     plan = _plan(shared_expert_mode="separate")
-    inputs = _inputs(
+    valid = _inputs(
         plan,
         num_tokens=3,
         shared_output=torch.zeros(3, plan.hidden_size, dtype=torch.bfloat16),
     )
-    inputs.validate(plan)
+    valid.validate(plan)
     with pytest.raises(MoEOutputCombineContractError, match="shared_output must have shape"):
         _inputs(
             plan,
@@ -315,6 +315,21 @@ def test_inverse_mapping_rejects_boolean_counts():
         inverse_map_expert_output(plan, inputs, num_tokens=True)
     with pytest.raises(MoEOutputCombineContractError, match="num_experts"):
         inverse_map_expert_output(plan, inputs, num_tokens=2, num_experts=True)
+
+
+def test_inverse_mapping_matches_declared_input_token_count():
+    plan, inputs = _request()
+    inputs = inputs.__class__(
+        expert_output=inputs.expert_output,
+        token_indices=inputs.token_indices,
+        expert_indices=inputs.expert_indices,
+        slot_indices=inputs.slot_indices,
+        routing_weights=inputs.routing_weights,
+        mapping_run_id=inputs.mapping_run_id,
+        num_tokens=2,
+    )
+    with pytest.raises(MoEOutputCombineContractError, match="disagrees"):
+        inverse_map_expert_output(plan, inputs, num_tokens=3)
 
 
 def test_p6_reference_backend_is_explicitly_registered():

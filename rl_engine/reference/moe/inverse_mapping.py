@@ -42,6 +42,10 @@ def inverse_map_expert_output(
     ):
         raise MoEOutputCombineContractError("num_experts must be a positive integer")
     inputs.validate(plan)
+    if inputs.num_tokens is not None and inputs.num_tokens != num_tokens:
+        raise MoEOutputCombineContractError(
+            "num_tokens disagrees with the input mapping contract"
+        )
     if expected_mapping_run_id is not None and inputs.mapping_run_id != expected_mapping_run_id:
         raise MoEOutputCombineContractError("mapping run id disagrees with the expected request")
 
