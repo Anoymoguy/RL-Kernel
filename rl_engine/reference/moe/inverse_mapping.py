@@ -32,23 +32,25 @@ def inverse_map_expert_output(
     preserve this exact mapping and failure contract.
     """
 
-    if not isinstance(num_tokens, int) or num_tokens <= 0:
+    if isinstance(num_tokens, bool) or not isinstance(num_tokens, int) or num_tokens <= 0:
         raise MoEOutputCombineContractError("num_tokens must be a positive integer")
-    if num_experts is not None and (not isinstance(num_experts, int) or num_experts <= 0):
+    if num_experts is not None and (
+        isinstance(num_experts, bool) or not isinstance(num_experts, int) or num_experts <= 0
+    ):
         raise MoEOutputCombineContractError("num_experts must be a positive integer")
     inputs.validate(plan)
     if expected_mapping_run_id is not None and inputs.mapping_run_id != expected_mapping_run_id:
         raise MoEOutputCombineContractError("mapping run id disagrees with the expected request")
 
-    token_indices = inputs.token_indices.detach().cpu().tolist()
-    slot_indices = inputs.slot_indices.detach().cpu().tolist()
-    expert_indices = inputs.expert_indices.detach().cpu().tolist()
     expected_slots = num_tokens * plan.top_k
-    if len(token_indices) != expected_slots:
+    if inputs.expert_output.shape[0] != expected_slots:
         raise MoEOutputCombineContractError(
             "expert output slot count must equal num_tokens * top_k"
         )
 
+    token_indices = inputs.token_indices.detach().cpu().tolist()
+    slot_indices = inputs.slot_indices.detach().cpu().tolist()
+    expert_indices = inputs.expert_indices.detach().cpu().tolist()
     order: dict[tuple[int, int], int] = {}
     for row, (token, slot, expert) in enumerate(
         zip(token_indices, slot_indices, expert_indices, strict=True)
@@ -116,6 +118,8 @@ def inverse_mapping_provenance(
             "num_tokens": num_tokens,
             "restored_shape": list(output.shape),
             "restored_stride": list(output.stride()),
+            "mapping_run_id_verified": expected_mapping_run_id is not None,
+            "expected_mapping_run_id": expected_mapping_run_id,
         }
     )
     return provenance

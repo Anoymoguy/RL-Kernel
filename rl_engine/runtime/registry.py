@@ -207,16 +207,14 @@ def _default_semantic_descriptors() -> tuple[OperatorBackendDescriptor, ...]:
         OperatorBackendDescriptor(
             semantic_op="moe_output_combine",
             backend_id="rlkernel.reference.moe_output_combine.v1",
-            supported_targets=frozenset({"rollout", "training"}),
+            supported_targets=frozenset({"training"}),
             supported_devices=frozenset({"cpu"}),
             supported_dtypes=frozenset({"bfloat16"}),
             supported_topologies={"*": "*"},
             determinism_or_alignment_properties={
-                "algorithm": "validated_p6_request_preparation",
+                "algorithm": "validated_p6_request_preparation_only",
                 "deterministic": True,
                 "strict_observable": False,
-                "inverse_mapping": "deferred_to_issue_52",
-                "reduction": "deferred_to_issue_53",
             },
             lifecycle=OperatorLifecycle.PROCESS,
             implementation_class_or_factory=(

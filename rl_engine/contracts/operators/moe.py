@@ -221,7 +221,7 @@ class MoEOutputCombineInputs:
             raise MoEOutputCombineContractError("slot_indices must be within top_k")
         pairs = torch.stack((self.token_indices, self.slot_indices), dim=1)
         if torch.unique(pairs, dim=0).shape[0] != num_slots:
-            raise MoEOutputCombineContractError("token and slot pairs must be unique")
+            raise MoEOutputCombineContractError("duplicate token and slot pairs are not allowed")
         if not torch.isfinite(self.expert_output).all():
             raise MoEOutputCombineContractError("expert_output must contain only finite values")
 
