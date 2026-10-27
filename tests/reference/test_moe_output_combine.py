@@ -45,6 +45,10 @@ def test_plan_rejects_bool_dimensions_and_mutable_metadata():
     assert plan.fingerprint == fingerprint
     with pytest.raises(TypeError):
         plan.metadata["new"] = "value"
+    with pytest.raises(MoEOutputCombineContractError):
+        _plan(expert_weight_applied=1)
+    with pytest.raises(MoEOutputCombineContractError):
+        _plan(merge_order=(1.0, 0.0))
 
 
 def test_plan_rejects_non_fixed_merge_order():
@@ -66,7 +70,8 @@ def test_weights_must_be_explicitly_owned_by_one_boundary():
     plan = _plan(expert_weight_applied=True)
     with pytest.raises(MoEOutputCombineContractError, match="already applied"):
         _inputs(plan).validate(plan)
-    assert _inputs(plan, routing_weights=None).validate(plan) is None
+    provenance = _inputs(plan, routing_weights=None).provenance(plan)
+    assert provenance["plan_fingerprint"] == plan.fingerprint
 
 
 def test_schema_and_shape_mismatches_fail_closed():
@@ -77,6 +82,22 @@ def test_schema_and_shape_mismatches_fail_closed():
         _inputs(plan, routing_weights=torch.ones(3)).validate(plan)
     with pytest.raises(MoEOutputCombineContractError, match="slot_indices must be within top_k"):
         _inputs(plan, slot_indices=torch.tensor([0, 1, 0, 2])).validate(plan)
+
+
+def test_separate_shared_output_uses_declared_token_shape():
+    plan = _plan(shared_expert_mode="separate")
+    inputs = _inputs(
+        plan,
+        num_tokens=3,
+        shared_output=torch.zeros(3, plan.hidden_size, dtype=torch.bfloat16),
+    )
+    inputs.validate(plan)
+    with pytest.raises(MoEOutputCombineContractError, match="num_tokens"):
+        _inputs(
+            plan,
+            num_tokens=3,
+            shared_output=torch.zeros(4, plan.hidden_size, dtype=torch.bfloat16),
+        ).validate(plan)
 
 
 def test_prepare_output_combine_returns_versioned_provenance():

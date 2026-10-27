@@ -33,7 +33,8 @@ def _json_value(value: Any) -> Any:
     if isinstance(value, tuple):
         return [_json_value(item) for item in value]
     if isinstance(value, (list, set, frozenset)):
-        return [_json_value(item) for item in value]
+        items = [_json_value(item) for item in value]
+        return sorted(items, key=lambda item: json.dumps(item, sort_keys=True, default=str))
     if isinstance(value, Mapping):
         return {str(key): _json_value(item) for key, item in value.items()}
     return value
@@ -41,6 +42,8 @@ def _json_value(value: Any) -> Any:
 
 def _freeze_value(value: Any) -> Any:
     """Deep-freeze metadata so the plan fingerprint remains stable."""
+    if isinstance(value, torch.dtype):
+        return _dtype_name(value)
     if isinstance(value, Mapping):
         return MappingProxyType({str(key): _freeze_value(item) for key, item in value.items()})
     if isinstance(value, list):
@@ -73,7 +76,14 @@ class MoEOutputCombinePlan:
             raise MoEOutputCombineContractError("top_k must be a positive integer")
         if isinstance(self.hidden_size, bool) or not isinstance(self.hidden_size, int) or self.hidden_size <= 0:
             raise MoEOutputCombineContractError("hidden_size must be a positive integer")
-        merge_order = tuple(range(self.top_k) if self.merge_order is None else self.merge_order)
+        if self.merge_order is None:
+            merge_order = tuple(range(self.top_k))
+        else:
+            if not isinstance(self.merge_order, (tuple, list)) or any(
+                isinstance(item, bool) or not isinstance(item, int) for item in self.merge_order
+            ):
+                raise MoEOutputCombineContractError("merge_order must contain integer slot indices")
+            merge_order = tuple(self.merge_order)
         if merge_order != tuple(range(self.top_k)):
             raise MoEOutputCombineContractError(
                 f"merge_order must be the fixed slot order 0..{self.top_k - 1}"
@@ -87,14 +97,18 @@ class MoEOutputCombinePlan:
             raise MoEOutputCombineContractError("P6 routing weights must be float32")
         if self.accumulation_dtype != "float32":
             raise MoEOutputCombineContractError("P6 accumulation must be float32")
-        if self.shared_expert_mode not in {"excluded", "separate", "included"}:
+        if not isinstance(self.expert_weight_applied, bool):
+            raise MoEOutputCombineContractError("expert_weight_applied must be a bool")
+        if self.shared_expert_mode not in {"excluded", "separate"}:
             raise MoEOutputCombineContractError(
-                "shared_expert_mode must be excluded, separate, or included"
+                "shared_expert_mode must be excluded or separate"
             )
-        if self.residual_mode not in {"excluded", "external", "included"}:
+        if self.residual_mode not in {"excluded", "external"}:
             raise MoEOutputCombineContractError(
-                "residual_mode must be excluded, external, or included"
+                "residual_mode must be excluded or external"
             )
+        if not isinstance(self.mapping_schema_version, str) or not isinstance(self.plan_version, str):
+            raise MoEOutputCombineContractError("mapping and plan versions must be strings")
         if not self.mapping_schema_version.strip() or not self.plan_version.strip():
             raise MoEOutputCombineContractError("mapping and plan versions must not be empty")
         if not isinstance(self.metadata, Mapping):
@@ -138,6 +152,7 @@ class MoEOutputCombineInputs:
     mapping_schema_version: str = "p4-token-slot.v1"
     producer_backend: str = "unknown"
     producer_build_fingerprint: str = "unknown"
+    num_tokens: int | None = None
 
     def validate(self, plan: MoEOutputCombinePlan) -> None:
         if self.expert_output.ndim != 2 or self.expert_output.shape[1] != plan.hidden_size:
@@ -168,6 +183,12 @@ class MoEOutputCombineInputs:
                 raise MoEOutputCombineContractError(f"{name} dtype disagrees with the plan")
         if self.mapping_schema_version != plan.mapping_schema_version:
             raise MoEOutputCombineContractError("mapping schema version disagrees with the plan")
+        if self.num_tokens is not None and (
+            isinstance(self.num_tokens, bool) or not isinstance(self.num_tokens, int) or self.num_tokens <= 0
+        ):
+            raise MoEOutputCombineContractError("num_tokens must be a positive integer when provided")
+        if self.num_tokens is not None and bool(torch.any(self.token_indices >= self.num_tokens)):
+            raise MoEOutputCombineContractError("token_indices must be within num_tokens")
         for name, tensor in (("token_indices", self.token_indices),
                              ("expert_indices", self.expert_indices),
                              ("slot_indices", self.slot_indices)):
@@ -175,6 +196,11 @@ class MoEOutputCombineInputs:
                 raise MoEOutputCombineContractError(f"{name} must be non-negative")
         if bool(torch.any(self.slot_indices >= plan.top_k)):
             raise MoEOutputCombineContractError("slot_indices must be within top_k")
+        pairs = torch.stack((self.token_indices, self.slot_indices), dim=1)
+        if torch.unique(pairs, dim=0).shape[0] != num_slots:
+            raise MoEOutputCombineContractError("token and slot pairs must be unique")
+        if not torch.isfinite(self.expert_output).all():
+            raise MoEOutputCombineContractError("expert_output must contain only finite values")
 
         if self.routing_weights is not None:
             if plan.expert_weight_applied:
@@ -189,6 +215,8 @@ class MoEOutputCombineInputs:
                 raise MoEOutputCombineContractError("routing_weights must be float32")
             if self.routing_weights.device != self.expert_output.device:
                 raise MoEOutputCombineContractError("routing_weights must share expert_output device")
+            if not torch.isfinite(self.routing_weights).all():
+                raise MoEOutputCombineContractError("routing_weights must contain only finite values")
         elif not plan.expert_weight_applied:
             raise MoEOutputCombineContractError(
                 "routing_weights are required when expert weights are not applied"
@@ -201,12 +229,14 @@ class MoEOutputCombineInputs:
             if ((name == "shared_output" and mode == "separate") or
                     (name == "residual" and mode == "external")) and tensor is None:
                 raise MoEOutputCombineContractError(f"{name} is required by the plan")
-            if mode in {"excluded", "included"} and tensor is not None:
+            if mode == "excluded" and tensor is not None:
                 raise MoEOutputCombineContractError(
-                    f"{name} must be omitted when {name} mode is {mode}; included means it is already present"
+                    f"{name} must be omitted when {name} mode is excluded"
                 )
             if tensor is not None:
-                num_tokens = int(self.token_indices.max().item()) + 1 if num_slots else 0
+                num_tokens = self.num_tokens
+                if num_tokens is None:
+                    num_tokens = int(self.token_indices.max().item()) + 1 if num_slots else 0
                 if tensor.shape != (num_tokens, plan.hidden_size):
                     raise MoEOutputCombineContractError(
                         f"{name} must have shape [num_tokens, hidden_size]"
@@ -228,6 +258,9 @@ class MoEOutputCombineInputs:
             "top_k": plan.top_k,
             "hidden_size": plan.hidden_size,
             "num_slots": int(self.expert_output.shape[0]),
+            "num_tokens": self.num_tokens if self.num_tokens is not None else (
+                int(self.token_indices.max().item()) + 1 if self.token_indices.numel() else 0
+            ),
             "producer_backend": self.producer_backend,
             "producer_build_fingerprint": self.producer_build_fingerprint,
             "device": str(self.expert_output.device),

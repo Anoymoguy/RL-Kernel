@@ -10,8 +10,9 @@ same plan for those operations.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Any
+from types import MappingProxyType
 
 from rl_engine.contracts.operators.moe import (
     MoEOutputCombineContractError,
@@ -26,7 +27,7 @@ class PreparedMoEOutputCombine:
 
     plan: MoEOutputCombinePlan
     inputs: MoEOutputCombineInputs
-    provenance: dict[str, Any]
+    provenance: MappingProxyType
 
 
 def prepare_output_combine(
@@ -45,7 +46,19 @@ def prepare_output_combine(
         )
 
     provenance = inputs.provenance(plan)
-    return PreparedMoEOutputCombine(plan=plan, inputs=inputs, provenance=provenance)
+    snapshot = replace(
+        inputs,
+        expert_output=inputs.expert_output.detach().clone(),
+        token_indices=inputs.token_indices.detach().clone(),
+        expert_indices=inputs.expert_indices.detach().clone(),
+        slot_indices=inputs.slot_indices.detach().clone(),
+        routing_weights=(inputs.routing_weights.detach().clone() if inputs.routing_weights is not None else None),
+        shared_output=(inputs.shared_output.detach().clone() if inputs.shared_output is not None else None),
+        residual=(inputs.residual.detach().clone() if inputs.residual is not None else None),
+    )
+    return PreparedMoEOutputCombine(
+        plan=plan, inputs=snapshot, provenance=MappingProxyType(provenance)
+    )
 
 
 __all__ = ["PreparedMoEOutputCombine", "prepare_output_combine"]
