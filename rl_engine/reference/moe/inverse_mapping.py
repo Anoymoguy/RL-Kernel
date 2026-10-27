@@ -30,6 +30,9 @@ def inverse_map_expert_output(
     complete ``(token, slot)`` domain on the host, then gathers rows in a
     canonical token-major order.  A future HIP/Triton implementation must
     preserve this exact mapping and failure contract.
+    ``expected_mapping_run_id`` is an optional cross-request guard. When it is
+    omitted, the input run ID is carried through without claiming an external
+    identity comparison.
     """
 
     if isinstance(num_tokens, bool) or not isinstance(num_tokens, int) or num_tokens <= 0:
