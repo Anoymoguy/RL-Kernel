@@ -73,6 +73,8 @@ def test_plan_rejects_bool_dimensions_and_mutable_metadata():
 def test_plan_rejects_non_fixed_merge_order():
     with pytest.raises(MoEOutputCombineContractError, match="merge_order"):
         _plan(merge_order=(1, 0))
+    with pytest.raises(MoEOutputCombineContractError, match="merge_order"):
+        _plan(merge_order=(1.0, 0.0))
 
 
 def test_inputs_validate_against_plan():
@@ -282,6 +284,7 @@ def test_inverse_mapping_provenance_records_canonical_layout():
 
     assert provenance["inverse_mapping"] == "token_major_slot_minor"
     assert provenance["restored_shape"] == [2, 2, 3]
+    assert provenance["mapping_run_id_verified"] is True
 
 
 def test_inverse_mapping_rejects_wrong_run_id_and_expert_overflow():
@@ -304,6 +307,14 @@ def test_inverse_mapping_rejects_wrong_run_id_and_expert_overflow():
     )
     with pytest.raises(MoEOutputCombineContractError, match="expert index"):
         inverse_map_expert_output(plan, bad_inputs, num_tokens=2, num_experts=8)
+
+
+def test_inverse_mapping_rejects_boolean_counts():
+    plan, inputs = _request()
+    with pytest.raises(MoEOutputCombineContractError, match="num_tokens"):
+        inverse_map_expert_output(plan, inputs, num_tokens=True)
+    with pytest.raises(MoEOutputCombineContractError, match="num_experts"):
+        inverse_map_expert_output(plan, inputs, num_tokens=2, num_experts=True)
 
 
 def test_p6_reference_backend_is_explicitly_registered():
