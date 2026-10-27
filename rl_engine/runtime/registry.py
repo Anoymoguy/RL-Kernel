@@ -209,7 +209,7 @@ def _default_semantic_descriptors() -> tuple[OperatorBackendDescriptor, ...]:
             backend_id="rlkernel.reference.moe_output_combine.v1",
             supported_targets=frozenset({"training"}),
             supported_devices=frozenset({"cpu"}),
-            supported_dtypes=frozenset({"bfloat16"}),
+            supported_dtypes=frozenset({"float32", "bfloat16", "float16"}),
             supported_topologies={"*": "*"},
             determinism_or_alignment_properties={
                 "algorithm": "validated_p6_request_preparation_only",
