@@ -155,6 +155,10 @@ class MoEOutputCombineInputs:
     num_tokens: int | None = None
 
     def validate(self, plan: MoEOutputCombinePlan) -> None:
+        if self.expert_output.device.type != "cpu":
+            raise MoEOutputCombineContractError(
+                "P6 reference output-combine inputs must be on CPU"
+            )
         if self.expert_output.ndim != 2 or self.expert_output.shape[1] != plan.hidden_size:
             raise MoEOutputCombineContractError(
                 "expert_output must have shape [num_slots, hidden_size]"
@@ -260,9 +264,7 @@ class MoEOutputCombineInputs:
             "top_k": plan.top_k,
             "hidden_size": plan.hidden_size,
             "num_slots": int(self.expert_output.shape[0]),
-            "num_tokens": self.num_tokens if self.num_tokens is not None else (
-                int(self.token_indices.max().item()) + 1 if self.token_indices.numel() else 0
-            ),
+            "num_tokens": self.num_tokens,
             "producer_backend": self.producer_backend,
             "producer_build_fingerprint": self.producer_build_fingerprint,
             "device": str(self.expert_output.device),
