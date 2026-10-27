@@ -148,6 +148,7 @@ def test_prepare_output_combine_returns_versioned_provenance():
         routing_weights=torch.ones(2, dtype=torch.float32),
         producer_backend="test.reference",
         producer_build_fingerprint="test-build-v1",
+        num_tokens=2,
     )
 
     prepared = prepare_output_combine(plan, inputs)
@@ -156,6 +157,21 @@ def test_prepare_output_combine_returns_versioned_provenance():
     assert prepared.provenance["producer_backend"] == "test.reference"
     assert prepared.provenance["producer_build_fingerprint"] == "test-build-v1"
     assert prepared.provenance["expert_output_stride"] == [3, 1]
+    assert prepared.provenance["num_tokens"] == 2
+
+
+def test_reference_preparation_requires_explicit_token_count():
+    plan = MoEOutputCombinePlan(top_k=1, hidden_size=3)
+    inputs = MoEOutputCombineInputs(
+        expert_output=torch.zeros(2, 3, dtype=torch.bfloat16),
+        token_indices=torch.tensor([0, 1], dtype=torch.int64),
+        expert_indices=torch.tensor([4, 4], dtype=torch.int64),
+        slot_indices=torch.tensor([0, 0], dtype=torch.int64),
+        routing_weights=torch.ones(2, dtype=torch.float32),
+    )
+
+    with pytest.raises(MoEOutputCombineContractError, match="explicit num_tokens"):
+        prepare_output_combine(plan, inputs)
 
 
 def test_reference_preparation_rejects_non_cpu_inputs():

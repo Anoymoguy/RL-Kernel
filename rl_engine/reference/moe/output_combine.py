@@ -44,6 +44,10 @@ def prepare_output_combine(
         raise MoEOutputCombineContractError(
             "P6 reference output-combine inputs must be on CPU"
         )
+    if inputs.num_tokens is None:
+        raise MoEOutputCombineContractError(
+            "P6 reference preparation requires explicit num_tokens"
+        )
     if plan.plan_version != "p6-output-combine.v1":
         raise MoEOutputCombineContractError(
             f"unsupported P6 plan version: {plan.plan_version}"
