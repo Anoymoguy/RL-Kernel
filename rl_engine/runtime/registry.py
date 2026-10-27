@@ -214,7 +214,7 @@ def _default_semantic_descriptors() -> tuple[OperatorBackendDescriptor, ...]:
             determinism_or_alignment_properties={
                 "algorithm": "validated_p6_request_preparation_only",
                 "deterministic": True,
-                "strict_observable": False,
+                "strict_observable": True,
             },
             lifecycle=OperatorLifecycle.PROCESS,
             implementation_class_or_factory=(

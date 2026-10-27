@@ -323,7 +323,7 @@ def test_p6_reference_backend_is_explicitly_registered():
     )
 
     assert descriptor is not None
-    assert not descriptor.is_strictly_observable
+    assert descriptor.is_strictly_observable
     assert descriptor.fallback_policy.value == "error"
 
 
@@ -334,7 +334,6 @@ def test_p6_reference_backend_can_be_resolved_and_instantiated():
         requested_backend="rlkernel.reference.moe_output_combine.v1",
         target="training",
         requirements=OperatorRequirements(device="cpu", dtype="bfloat16"),
-        strict=False,
     )
     instance = session.instantiate(resolution)
 
