@@ -198,16 +198,18 @@ class MoEOutputCombineInputs:
             ("shared_output", self.shared_output, plan.shared_expert_mode),
             ("residual", self.residual, plan.residual_mode),
         ):
-            if mode == "external" and tensor is None:
+            if ((name == "shared_output" and mode == "separate") or
+                    (name == "residual" and mode == "external")) and tensor is None:
                 raise MoEOutputCombineContractError(f"{name} is required by the plan")
             if mode in {"excluded", "included"} and tensor is not None:
                 raise MoEOutputCombineContractError(
-                    f"{name} must be omitted when {name} mode is {mode}"
+                    f"{name} must be omitted when {name} mode is {mode}; included means it is already present"
                 )
             if tensor is not None:
-                if tensor.shape != (num_slots, plan.hidden_size):
+                num_tokens = int(self.token_indices.max().item()) + 1 if num_slots else 0
+                if tensor.shape != (num_tokens, plan.hidden_size):
                     raise MoEOutputCombineContractError(
-                        f"{name} must have shape [num_slots, hidden_size]"
+                        f"{name} must have shape [num_tokens, hidden_size]"
                     )
                 if tensor.device != self.expert_output.device:
                     raise MoEOutputCombineContractError(f"{name} must share expert_output device")

@@ -13,7 +13,11 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any
 
-from rl_engine.contracts.operators.moe import (MoEOutputCombineContractError, MoEOutputCombineInputs, MoEOutputCombinePlan)
+from rl_engine.contracts.operators.moe import (
+    MoEOutputCombineContractError,
+    MoEOutputCombineInputs,
+    MoEOutputCombinePlan,
+)
 
 
 @dataclass(frozen=True)
@@ -36,7 +40,9 @@ def prepare_output_combine(
     if not isinstance(inputs, MoEOutputCombineInputs):
         raise MoEOutputCombineContractError("inputs must be a MoEOutputCombineInputs")
     if plan.plan_version != "p6-output-combine.v1":
-        raise ValueError(f"unsupported P6 plan version: {plan.plan_version}")
+        raise MoEOutputCombineContractError(
+            f"unsupported P6 plan version: {plan.plan_version}"
+        )
 
     provenance = inputs.provenance(plan)
     return PreparedMoEOutputCombine(plan=plan, inputs=inputs, provenance=provenance)

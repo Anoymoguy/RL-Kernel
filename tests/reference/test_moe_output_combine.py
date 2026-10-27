@@ -66,18 +66,16 @@ def test_weights_must_be_explicitly_owned_by_one_boundary():
     plan = _plan(expert_weight_applied=True)
     with pytest.raises(MoEOutputCombineContractError, match="already applied"):
         _inputs(plan).validate(plan)
-    assert _inputs(_plan(expert_weight_applied=True), routing_weights=None).validate(
-        _plan(expert_weight_applied=True)
-    ) is None
+    assert _inputs(plan, routing_weights=None).validate(plan) is None
 
 
 def test_schema_and_shape_mismatches_fail_closed():
     plan = _plan()
     with pytest.raises(MoEOutputCombineContractError, match="mapping schema"):
         _inputs(plan, mapping_schema_version="p4-token-slot.v0").validate(plan)
-    with pytest.raises(MoEOutputCombineContractError, match="routing_weights"):
+    with pytest.raises(MoEOutputCombineContractError, match="one float32 value per expert output slot"):
         _inputs(plan, routing_weights=torch.ones(3)).validate(plan)
-    with pytest.raises(MoEOutputCombineContractError, match="slot_indices"):
+    with pytest.raises(MoEOutputCombineContractError, match="slot_indices must be within top_k"):
         _inputs(plan, slot_indices=torch.tensor([0, 1, 0, 2])).validate(plan)
 
 
