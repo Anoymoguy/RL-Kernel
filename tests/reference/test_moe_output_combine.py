@@ -3,6 +3,7 @@
 
 import pytest
 import torch
+from dataclasses import replace
 
 from rl_engine.contracts.operators.moe import (
     MoEOutputCombineContractError,
@@ -73,7 +74,7 @@ def test_plan_rejects_bool_dimensions_and_mutable_metadata():
 def test_plan_rejects_non_fixed_merge_order():
     with pytest.raises(MoEOutputCombineContractError, match="merge_order"):
         _plan(merge_order=(1, 0))
-    with pytest.raises(MoEOutputCombineContractError, match="merge_order"):
+    with pytest.raises(MoEOutputCombineContractError, match="merge_order must contain integer"):
         _plan(merge_order=(1.0, 0.0))
 
 
@@ -109,8 +110,16 @@ def test_schema_and_shape_mismatches_fail_closed():
 
 def test_auxiliary_outputs_require_explicit_token_count():
     plan = _plan(shared_expert_mode="separate")
+    base = {
+        "expert_output": torch.zeros(6, plan.hidden_size, dtype=torch.bfloat16),
+        "token_indices": torch.tensor([0, 0, 1, 1, 2, 2], dtype=torch.int64),
+        "expert_indices": torch.tensor([0, 1, 0, 1, 0, 1], dtype=torch.int64),
+        "slot_indices": torch.tensor([0, 1, 0, 1, 0, 1], dtype=torch.int64),
+        "routing_weights": torch.ones(6, dtype=torch.float32),
+    }
     valid = _inputs(
         plan,
+        **base,
         num_tokens=3,
         shared_output=torch.zeros(3, plan.hidden_size, dtype=torch.bfloat16),
     )
@@ -118,12 +127,14 @@ def test_auxiliary_outputs_require_explicit_token_count():
     with pytest.raises(MoEOutputCombineContractError, match="shared_output must have shape"):
         _inputs(
             plan,
+            **base,
             num_tokens=3,
             shared_output=torch.zeros(4, plan.hidden_size, dtype=torch.bfloat16),
         ).validate(plan)
     with pytest.raises(MoEOutputCombineContractError, match="num_tokens is required"):
         _inputs(
             plan,
+            **base,
             shared_output=torch.zeros(2, plan.hidden_size, dtype=torch.bfloat16),
         ).validate(plan)
 
@@ -257,7 +268,14 @@ def test_inverse_mapping_supports_non_contiguous_expert_output_and_int32_indices
 
     assert restored.shape == (2, 2, 3)
     assert restored.is_contiguous()
-    assert restored[0, 0].tolist() == [0, 4, 8]
+    expected = torch.tensor(
+        [
+            [[0, 4, 8], [2, 6, 10]],
+            [[1, 5, 9], [3, 7, 11]],
+        ],
+        dtype=torch.bfloat16,
+    )
+    assert torch.equal(restored, expected)
 
 
 @pytest.mark.parametrize(
@@ -297,14 +315,7 @@ def test_inverse_mapping_rejects_wrong_run_id_and_expert_overflow():
 
     bad_expert = inputs.expert_indices.clone()
     bad_expert[0] = 8
-    bad_inputs = inputs.__class__(
-        expert_output=inputs.expert_output,
-        token_indices=inputs.token_indices,
-        expert_indices=bad_expert,
-        slot_indices=inputs.slot_indices,
-        routing_weights=inputs.routing_weights,
-        mapping_run_id=inputs.mapping_run_id,
-    )
+    bad_inputs = replace(inputs, expert_indices=bad_expert)
     with pytest.raises(MoEOutputCombineContractError, match="expert index"):
         inverse_map_expert_output(plan, bad_inputs, num_tokens=2, num_experts=8)
 
