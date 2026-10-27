@@ -368,5 +368,6 @@ def test_p6_reference_backend_can_be_resolved_and_instantiated():
     assert isinstance(instance, MoEOutputCombineReferenceOp)
     assert instance.backend_id == "rlkernel.reference.moe_output_combine.v1"
     plan, inputs = _request()
+    inputs = replace(inputs, num_tokens=2)
     prepared = instance.prepare(plan, inputs)
     assert prepared.provenance["plan_fingerprint"] == plan.fingerprint
