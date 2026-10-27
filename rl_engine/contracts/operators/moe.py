@@ -239,8 +239,6 @@ class MoEOutputCombineInputs:
                         "num_tokens is required when shared_expert_mode or residual_mode is not excluded"
                     )
                 num_tokens = self.num_tokens
-                if num_tokens is None:
-                    num_tokens = int(self.token_indices.max().item()) + 1 if num_slots else 0
                 if tensor.shape != (num_tokens, plan.hidden_size):
                     raise MoEOutputCombineContractError(
                         f"{name} must have shape [num_tokens, hidden_size]"
