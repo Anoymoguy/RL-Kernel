@@ -60,6 +60,48 @@ def pair(op, m=17, n=65):
 
 
 @pytest.mark.parametrize("precision", ["mxfp4", "e4m3fn", "e4m3fnuz"])
+@pytest.mark.parametrize("alias_kind", ["data", "set_storage"])
+def test_snapshot_protects_gpu_queries_and_prepared_keys_from_caller_aliases(
+    backend, precision, alias_kind
+):
+    c = make_contract(precision)
+    op = IndexerICV(c, backend=backend)
+    qv, qs = payload(c, 3, q=True, device="cuda")
+    kv, ks = payload(c, 5, seed=42, device="cuda")
+    q = bind_icv_queries(
+        op,
+        qv,
+        qs,
+        ids(7, 3, device="cuda"),
+        layout=c.layout,
+        version="v1",
+        ownership="snapshot",
+    )
+    k = bind_global_icv_keys(
+        op,
+        kv,
+        ks,
+        ids(7, 5, device="cuda"),
+        layout=c.layout,
+        version="v1",
+        request_key_counts={7: 5},
+        ownership="snapshot",
+    )
+    before = op.materialize(q, k)[0].values.clone()
+    tensors = [qv, qs, kv, ks]
+    versions = [t._version for t in tensors]
+    for t in tensors:
+        if alias_kind == "data":
+            t.data.view(torch.uint8).zero_()
+        else:
+            torch.empty(0, dtype=torch.uint8, device=t.device).set_(
+                t.untyped_storage(), 0, (t.numel() * t.element_size(),), (1,)
+            ).zero_()
+    assert [t._version for t in tensors] == versions
+    byte_equal(op.materialize(q, k)[0].values, before)
+
+
+@pytest.mark.parametrize("precision", ["mxfp4", "e4m3fn", "e4m3fnuz"])
 @pytest.mark.parametrize("seed", range(10))
 def test_seeded_ragged_multi_request_geometry_and_cp_properties(backend, precision, seed):
     c = make_contract(

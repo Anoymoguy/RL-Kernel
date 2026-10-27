@@ -4,6 +4,7 @@
 from dataclasses import asdict, dataclass
 import hashlib
 import json
+from pathlib import Path
 
 from rl_engine.contracts.operators.attention import AttentionContractError
 
@@ -14,6 +15,16 @@ FP8_LAYOUT = "e4m3.row_major.fp32_per_row_scale"
 
 class IndexerICVError(AttentionContractError):
     pass
+
+
+def source_sha256(path, *, label):
+    """Fail closed when a numerical provider has no inspectable source file."""
+    if not isinstance(path, (str, Path)) or not path:
+        raise IndexerICVError(f"source fingerprint unavailable for {label}")
+    try:
+        return hashlib.sha256(Path(path).read_bytes()).hexdigest()
+    except (OSError, ValueError) as exc:
+        raise IndexerICVError(f"source fingerprint unavailable for {label}") from exc
 
 
 @dataclass(frozen=True)

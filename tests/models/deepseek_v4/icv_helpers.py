@@ -20,7 +20,28 @@ def decode_fp4(data, scales, dim):
 def decode(data, scales, contract):
     if contract.precision == "mxfp4":
         return decode_fp4(data, scales, contract.head_dim)
+    validate_fp8(data, scales, contract)
     return data.cpu().double() * scales.cpu().double()
+
+
+def validate_fp8(data, scales, contract):
+    """Independent oracle checks; FP8 scales are multipliers, NOT exponent bytes."""
+    if not isinstance(scales, torch.Tensor) or scales.dtype != torch.float32:
+        raise ValueError("FP8 reference requires FP32 scale multipliers")
+    if data.dtype != getattr(torch, "float8_" + contract.fp8_encoding):
+        raise ValueError("FP8 reference encoding mismatch")
+    if data.ndim not in (2, 3) or data.shape[-1] != contract.head_dim:
+        raise ValueError("FP8 reference data shape mismatch")
+    if tuple(scales.shape) != (*data.shape[:-1], 1):
+        raise ValueError("FP8 reference scale shape mismatch")
+    if not bool(torch.isfinite(data.float()).all()):
+        raise ValueError("FP8 reference payload must be finite")
+    s = scales.cpu().double()
+    exponent = torch.log2(s)
+    if not bool((torch.isfinite(exponent) & (exponent >= -60) & (exponent <= 30)).all()):
+        raise ValueError("FP8 reference scale out of domain")
+    if not bool((exponent == exponent.round()).all()):
+        raise ValueError("FP8 reference scale must be a power of two")
 
 
 class ReferenceICVBackend:
@@ -35,11 +56,20 @@ class ReferenceICVBackend:
         return {"test_only": True}
 
     def prepare(self, data, scales, contract):
-        return decode(data, scales, contract).bfloat16(), None
+        if contract.precision == "mxfp4":
+            return decode(data, scales, contract).bfloat16(), None
+        validate_fp8(data, scales, contract)
+        # Keep multipliers separate to test the production epilogue placement.
+        # The old oracle pre-scaled BF16 operands; that applied scales, but was
+        # not faithful to FP8 dot-then-scale at the small-exponent boundary.
+        return data.cpu().float(), scales.cpu().clone()
 
     def dot(self, q, k, q_scale, k_scale, contract):
         self.calls += 1
-        return torch.einsum("mhd,nd->mhn", q.float(), k.float())
+        out = torch.einsum("mhd,nd->mhn", q.float(), k.float())
+        if contract.precision == "fp8":
+            out = out * (q_scale * k_scale.transpose(0, 1))
+        return out
 
 
 def payload(contract, rows, *, q=False, seed=0, device="cpu"):

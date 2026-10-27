@@ -192,10 +192,28 @@ epoch: reusing a request ID for a different request must not reuse old prepared 
 under the same version. The caller owns this barrier; no cache allocator or
 request lifecycle manager is invented inside item 16.
 
-Normal tracked tensors retain mutation guards. Inference tensors without
-version counters are privately snapshotted rather than silently trusted.
-Prepared arrays and selectors are also guarded. The compute/iteration path has
-no `.cpu()`, `.item()`, `.tolist()` or tensor-to-bool readback.
+Binding exposes two explicit ownership policies (including both framework
+adapters). `ownership="borrowed"` is the zero-copy default: the caller must
+prevent **all** writes through **all** aliases until consumers finish. Version
+stamps catch ordinary PyTorch mutations, not `.data`, NumPy/from-blob aliases
+or fresh tensors sharing storage with independent counters. They are diagnostic
+guards, **not proof of immutable storage**.
+
+Use `ownership="snapshot"` when the original storage can be reused or mutated.
+It copies data and scales **before** content validation, isolating both from
+untracked caller aliases. Inference tensors automatically take this policy.
+Producer writes must be ordered before binding/copying; concurrent source writes
+during the copy are unsupported. Bound operand tensors, selectors and prepared
+workspaces themselves remain read-only by contract, including through aliases.
+The snapshots add source-sized allocations and a copy at binding; they do not
+change the numerical recipe. Large K buffers are not unconditionally copied in
+borrowed mode. Prepared arrays and selectors retain ordinary mutation guards.
+The compute/iteration path has no `.cpu()`, `.item()`, `.tolist()` or tensor-to-bool
+readback.
+
+Provider provenance fails closed with `IndexerICVError` when a module has no
+readable source (`__file__` absent/None, namespace packages, missing files);
+package names or versions alone are not substituted for source hashes.
 
 ## Bounded output, not a full quadratic allocation by default
 

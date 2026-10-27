@@ -4,12 +4,15 @@
 from dataclasses import dataclass, field
 import hashlib
 import json
-from pathlib import Path
 from types import MappingProxyType
 
 import torch
 
-from rl_engine.contracts.operators.indexer_icv import IndexerICVContract, IndexerICVError
+from rl_engine.contracts.operators.indexer_icv import (
+    IndexerICVContract,
+    IndexerICVError,
+    source_sha256,
+)
 
 
 def require(ok, message):
@@ -37,16 +40,26 @@ def tracked(t, *, copy=False):
 
 @dataclass(frozen=True)
 class QuantizedICVRows:
+    """Read-only by contract, not by PyTorch storage enforcement.
+
+    Borrowing requires the caller to forbid *all* writes until consumers finish;
+    version stamps only detect writes sharing PyTorch's version counter.
+    Snapshot mode isolates the original caller storage, including untracked
+    aliases. Neither mode authorizes writes to these bound tensor fields.
+    """
+
     data: torch.Tensor = field(repr=False)
     scales: torch.Tensor = field(repr=False)
     role: str
     version: str
     contract: IndexerICVContract
+    ownership: str
     _stamps: tuple = field(repr=False)
 
     @classmethod
-    def bind(cls, data, scales, *, role, version, layout, contract):
+    def bind(cls, data, scales, *, role, version, layout, contract, ownership="borrowed"):
         require(isinstance(contract, IndexerICVContract), "typed ICV contract required")
+        require(ownership in ("borrowed", "snapshot"), "ownership must be borrowed or snapshot")
         require(role in ("q", "k"), "role must be q or k")
         require(isinstance(version, str) and bool(version), "Q/K model-scale version required")
         require(layout == contract.layout, "unsupported/swizzled scale or nibble layout")
@@ -64,6 +77,13 @@ class QuantizedICVRows:
         require(data.device == scales.device, "data and scales must share a device")
         if role == "q":
             require(data.shape[1] == contract.num_heads, "query head count mismatch")
+        # Copy before validating content: admission must examine the same owned
+        # bytes later consumed by the backend, not the original caller storage.
+        # The caller must still order producer writes before binding/copying.
+        if data.is_inference() or scales.is_inference():
+            ownership = "snapshot"
+        data = tracked(data, copy=ownership == "snapshot")
+        scales = tracked(scales, copy=ownership == "snapshot")
         leading = tuple(data.shape[:-1])
         if contract.precision == "mxfp4":
             require(
@@ -78,9 +98,10 @@ class QuantizedICVRows:
             # Existing aiter upcast uses exponent bitcasts. Exclude exponent-zero
             # special handling, BF16 subnormals and overflow rather than silently
             # turning tiny values into zero or clamping large values.
-            zero_groups = ((data.reshape(*leading, contract.padded_dim // 32, 16) & 0x77) == 0).all(
-                dim=-1
-            )
+            packed = data.reshape(*leading, contract.padded_dim // 32, 16)
+            # E2M1 has a sign bit and three magnitude bits per nibble:
+            # 0x0 and 0x8 are both zero. Check BOTH nibbles, ignoring only signs.
+            zero_groups = (((packed & 0x07) == 0) & (((packed >> 4) & 0x07) == 0)).all(-1)
             admitted = ((scales >= 2) & (scales <= 252)) | (zero_groups & (scales < 255))
             require(
                 bool(admitted.all()),
@@ -103,10 +124,9 @@ class QuantizedICVRows:
             )
             require(
                 bool((torch.frexp(scales)[0] == 0.5).all()),
-                "FP8 scales must encode UE8M0 powers of two",
+                "FP8 scales must be FP32 power-of-two multipliers, not E8M0 exponent bytes",
             )
-        data, scales = tracked(data), tracked(scales)
-        return cls(data, scales, role, version, contract, (stamp(data), stamp(scales)))
+        return cls(data, scales, role, version, contract, ownership, (stamp(data), stamp(scales)))
 
     @property
     def device(self):
@@ -235,7 +255,7 @@ class IndexerICV:
         identity = {
             "contract": contract.fingerprint,
             "backend": getattr(backend, "provenance", {"test_backend": type(backend).__name__}),
-            "model_source": hashlib.sha256(Path(__file__).read_bytes()).hexdigest(),
+            "model_source": source_sha256(__file__, label=__name__),
             "plan": backend.plan(contract),
         }
         self.implementation_fingerprint = hashlib.sha256(

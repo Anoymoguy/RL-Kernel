@@ -1,13 +1,11 @@
 # SPDX-License-Identifier: Apache-2.0
 """Reuse aiter decode/GEMMs. No new ICV, unpacking or reduction kernel."""
 
-import hashlib
 import importlib
-from pathlib import Path
 
 import torch
 
-from rl_engine.contracts.operators.indexer_icv import ICV_BACKEND_ID, IndexerICVError
+from rl_engine.contracts.operators.indexer_icv import ICV_BACKEND_ID, IndexerICVError, source_sha256
 
 
 class AiterIndexerICVBackend:
@@ -44,9 +42,9 @@ class AiterIndexerICVBackend:
             "torch": torch.__version__,
             "hip": torch.version.hip,
             "triton": importlib.import_module("triton").__version__,
-            "adapter_sha256": hashlib.sha256(Path(__file__).read_bytes()).hexdigest(),
+            "adapter_sha256": source_sha256(__file__, label=__name__),
             "sources": {
-                name: hashlib.sha256(Path(module.__file__).read_bytes()).hexdigest()
+                name: source_sha256(getattr(module, "__file__", None), label=name)
                 for name, module in zip(names, modules, strict=True)
             },
         }

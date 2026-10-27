@@ -4,7 +4,7 @@
 from rl_engine.models.deepseek_v4.indexer_icv import BoundICVQueries, QuantizedICVRows, require
 
 
-def bind_icv_queries(operator, values, scales, query_ids, *, layout, version):
+def bind_icv_queries(operator, values, scales, query_ids, *, layout, version, ownership="borrowed"):
     require(
         scales is not None,
         "raw ICV needs independent Q scales; fused_indexer_q_rope_quant folds them "
@@ -17,6 +17,7 @@ def bind_icv_queries(operator, values, scales, query_ids, *, layout, version):
         version=version,
         layout=layout,
         contract=operator.contract,
+        ownership=ownership,
     )
     return BoundICVQueries.bind(operand, query_ids)
 
@@ -32,6 +33,7 @@ def bind_global_icv_keys(
     request_key_counts,
     key_owners=None,
     cp_size=1,
+    ownership="borrowed",
 ):
     operand = QuantizedICVRows.bind(
         values,
@@ -40,6 +42,7 @@ def bind_global_icv_keys(
         version=version,
         layout=layout,
         contract=operator.contract,
+        ownership=ownership,
     )
     return operator.prepare_keys(
         operand,
