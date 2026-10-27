@@ -124,3 +124,19 @@ def test_prepare_output_combine_returns_versioned_provenance():
     assert prepared.provenance["producer_build_fingerprint"] == "test-build-v1"
     assert prepared.provenance["expert_output_stride"] == [3, 1]
 
+
+def test_reference_preparation_rejects_non_cpu_inputs():
+    plan = _plan()
+    meta = torch.empty(4, plan.hidden_size, dtype=torch.bfloat16, device="meta")
+    inputs = _inputs(
+        plan,
+        expert_output=meta,
+        token_indices=torch.zeros(4, dtype=torch.int64, device="meta"),
+        expert_indices=torch.zeros(4, dtype=torch.int64, device="meta"),
+        slot_indices=torch.tensor([0, 1, 0, 1], dtype=torch.int64, device="meta"),
+        routing_weights=torch.ones(4, dtype=torch.float32, device="meta"),
+    )
+
+    with pytest.raises(MoEOutputCombineContractError, match="on CPU"):
+        prepare_output_combine(plan, inputs)
+

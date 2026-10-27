@@ -23,7 +23,7 @@ from rl_engine.contracts.operators.moe import (
 
 @dataclass(frozen=True)
 class PreparedMoEOutputCombine:
-    """Validated P6 request shared by reference and future ROCm backends."""
+    """Validated P6 snapshot shared by reference and future ROCm backends."""
 
     plan: MoEOutputCombinePlan
     inputs: MoEOutputCombineInputs
@@ -40,6 +40,10 @@ def prepare_output_combine(
         raise MoEOutputCombineContractError("plan must be a MoEOutputCombinePlan")
     if not isinstance(inputs, MoEOutputCombineInputs):
         raise MoEOutputCombineContractError("inputs must be a MoEOutputCombineInputs")
+    if inputs.expert_output.device.type != "cpu":
+        raise MoEOutputCombineContractError(
+            "P6 reference output-combine inputs must be on CPU"
+        )
     if plan.plan_version != "p6-output-combine.v1":
         raise MoEOutputCombineContractError(
             f"unsupported P6 plan version: {plan.plan_version}"

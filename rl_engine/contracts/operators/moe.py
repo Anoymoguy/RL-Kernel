@@ -55,7 +55,13 @@ def _freeze_value(value: Any) -> Any:
 
 @dataclass(frozen=True)
 class MoEOutputCombinePlan:
-    """Versioned semantic plan shared by training and rollout P6 callers."""
+    """Versioned semantic plan shared by training and rollout P6 callers.
+
+    When ``expert_weight_applied`` is false, ``routing_weights`` are consumed
+    as producer-supplied scaling factors.  P6 validates their dtype and
+    finiteness, but does not impose simplex normalization; DSV4 routing can
+    intentionally carry a separate scaling factor.
+    """
 
     top_k: int
     hidden_size: int
@@ -155,10 +161,6 @@ class MoEOutputCombineInputs:
     num_tokens: int | None = None
 
     def validate(self, plan: MoEOutputCombinePlan) -> None:
-        if self.expert_output.device.type != "cpu":
-            raise MoEOutputCombineContractError(
-                "P6 reference output-combine inputs must be on CPU"
-            )
         if self.expert_output.ndim != 2 or self.expert_output.shape[1] != plan.hidden_size:
             raise MoEOutputCombineContractError(
                 "expert_output must have shape [num_slots, hidden_size]"
