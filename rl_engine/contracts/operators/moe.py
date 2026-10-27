@@ -30,13 +30,16 @@ def _dtype_name(value: str | torch.dtype) -> str:
 def _json_value(value: Any) -> Any:
     if isinstance(value, torch.dtype):
         return _dtype_name(value)
-    if isinstance(value, tuple):
+    if isinstance(value, (tuple, list)):
         return [_json_value(item) for item in value]
-    if isinstance(value, (list, set, frozenset)):
+    if isinstance(value, (set, frozenset)):
         items = [_json_value(item) for item in value]
         return sorted(items, key=lambda item: json.dumps(item, sort_keys=True, default=str))
     if isinstance(value, Mapping):
-        return {str(key): _json_value(item) for key, item in value.items()}
+        return {
+            str(key): _json_value(item)
+            for key, item in sorted(value.items(), key=lambda item: str(item[0]))
+        }
     return value
 
 
@@ -46,6 +49,8 @@ def _freeze_value(value: Any) -> Any:
         return _dtype_name(value)
     if isinstance(value, Mapping):
         return MappingProxyType({str(key): _freeze_value(item) for key, item in value.items()})
+    if isinstance(value, tuple):
+        return tuple(_freeze_value(item) for item in value)
     if isinstance(value, list):
         return tuple(_freeze_value(item) for item in value)
     if isinstance(value, (set, frozenset)):
@@ -146,7 +151,12 @@ class MoEOutputCombinePlan:
 
 @dataclass(frozen=True)
 class MoEOutputCombineInputs:
-    """P4/P5 tensors and metadata entering the P6 boundary."""
+    """P4/P5 tensors and metadata entering the P6 boundary.
+
+    ``(token_indices, slot_indices)`` is the canonical identity of a routed
+    slot. ``expert_indices`` records the producing expert and is validated as
+    metadata; it is not used as a second uniqueness key.
+    """
 
     expert_output: torch.Tensor
     token_indices: torch.Tensor
@@ -161,6 +171,10 @@ class MoEOutputCombineInputs:
     num_tokens: int | None = None
 
     def validate(self, plan: MoEOutputCombinePlan) -> None:
+        if self.expert_output.device.type == "meta":
+            raise MoEOutputCombineContractError(
+                "meta tensors are not supported by P6 validation"
+            )
         if self.expert_output.ndim != 2 or self.expert_output.shape[1] != plan.hidden_size:
             raise MoEOutputCombineContractError(
                 "expert_output must have shape [num_slots, hidden_size]"
