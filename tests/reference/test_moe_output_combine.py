@@ -107,7 +107,7 @@ def test_schema_and_shape_mismatches_fail_closed():
         _inputs(plan, slot_indices=torch.tensor([0, 1, 0, 2])).validate(plan)
 
 
-def test_separate_shared_output_uses_declared_token_shape():
+def test_auxiliary_outputs_require_explicit_token_count():
     plan = _plan(shared_expert_mode="separate")
     inputs = _inputs(
         plan,
