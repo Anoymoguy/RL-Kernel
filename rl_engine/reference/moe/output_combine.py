@@ -13,7 +13,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any
 
-from rl_engine.contracts.operators.moe import MoEOutputCombineInputs, MoEOutputCombinePlan
+from rl_engine.contracts.operators.moe import (MoEOutputCombineContractError, MoEOutputCombineInputs, MoEOutputCombinePlan)
 
 
 @dataclass(frozen=True)
@@ -32,9 +32,9 @@ def prepare_output_combine(
     """Validate and freeze the semantic boundary before backend execution."""
 
     if not isinstance(plan, MoEOutputCombinePlan):
-        raise TypeError("plan must be a MoEOutputCombinePlan")
+        raise MoEOutputCombineContractError("plan must be a MoEOutputCombinePlan")
     if not isinstance(inputs, MoEOutputCombineInputs):
-        raise TypeError("inputs must be a MoEOutputCombineInputs")
+        raise MoEOutputCombineContractError("inputs must be a MoEOutputCombineInputs")
     if plan.plan_version != "p6-output-combine.v1":
         raise ValueError(f"unsupported P6 plan version: {plan.plan_version}")
 
