@@ -234,6 +234,10 @@ class MoEOutputCombineInputs:
                     f"{name} must be omitted when {name} mode is excluded"
                 )
             if tensor is not None:
+                if mode in {"separate", "external"} and self.num_tokens is None:
+                    raise MoEOutputCombineContractError(
+                        "num_tokens is required when shared_expert_mode or residual_mode is not excluded"
+                    )
                 num_tokens = self.num_tokens
                 if num_tokens is None:
                     num_tokens = int(self.token_indices.max().item()) + 1 if num_slots else 0

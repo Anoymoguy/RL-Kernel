@@ -98,6 +98,11 @@ def test_separate_shared_output_uses_declared_token_shape():
             num_tokens=3,
             shared_output=torch.zeros(4, plan.hidden_size, dtype=torch.bfloat16),
         ).validate(plan)
+    with pytest.raises(MoEOutputCombineContractError, match="num_tokens is required"):
+        _inputs(
+            plan,
+            shared_output=torch.zeros(2, plan.hidden_size, dtype=torch.bfloat16),
+        ).validate(plan)
 
 
 def test_prepare_output_combine_returns_versioned_provenance():
