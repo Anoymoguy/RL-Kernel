@@ -198,7 +198,7 @@ def test_reference_preparation_requires_explicit_token_count():
         prepare_output_combine(plan, inputs)
 
 
-def test_reference_preparation_rejects_non_cpu_inputs():
+def test_reference_entry_points_reject_non_cpu_inputs():
     plan = _plan()
     meta = torch.empty(4, plan.hidden_size, dtype=torch.bfloat16, device="meta")
     inputs = _inputs(
@@ -214,6 +214,8 @@ def test_reference_preparation_rejects_non_cpu_inputs():
         prepare_output_combine(plan, inputs)
     with pytest.raises(MoEOutputCombineContractError, match="meta tensors"):
         inputs.validate(plan)
+    with pytest.raises(MoEOutputCombineContractError, match="on CPU"):
+        inverse_map_expert_output(plan, inputs, num_tokens=2)
 
 
 def _request(*, index_dtype=torch.int64, expert_output=None, tokens=None, slots=None, run_id="run-1"):

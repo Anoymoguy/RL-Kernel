@@ -41,6 +41,10 @@ def inverse_map_expert_output(
         isinstance(num_experts, bool) or not isinstance(num_experts, int) or num_experts <= 0
     ):
         raise MoEOutputCombineContractError("num_experts must be a positive integer")
+    if inputs.expert_output.device.type != "cpu":
+        raise MoEOutputCombineContractError(
+            "P6 reference inverse mapping inputs must be on CPU"
+        )
     inputs.validate(plan)
     if inputs.num_tokens is not None and inputs.num_tokens != num_tokens:
         raise MoEOutputCombineContractError(
