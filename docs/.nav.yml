@@ -29,6 +29,7 @@ nav:
       - operators/sampling.md
       - operators/det-gemm.md
       - operators/router-gate.md
+      - operators/dsv4-lora.md
       - operators/embedding.md
   - Developer Guide:
     - contributing/README.md
