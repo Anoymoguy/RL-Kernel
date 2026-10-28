@@ -1,5 +1,9 @@
 # SPDX-License-Identifier: Apache-2.0
-"""Observe explicit replay bridge state without importing VIME."""
+"""Collect engine-independent replay bridge state candidates.
+
+Framework adapters may call this collector with their actual bridge/state views.
+It does not implement the executable ProviderObserver protocol or install hooks.
+"""
 
 from rl_engine.contracts.strict_provider import StrictProviderError
 from rl_engine.integrations.common.gdn_provider_observation import (
@@ -8,7 +12,7 @@ from rl_engine.integrations.common.gdn_provider_observation import (
 )
 
 
-class VimeGDNObserver:
+class ReplayGDNCandidateCollector:
     """Read a replay bridge's explicit state; do not borrow rollout caches."""
 
     def observe_call(self, bridge, state, *, indices, cu_seqlens, bindings):

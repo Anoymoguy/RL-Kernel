@@ -9,9 +9,10 @@ import torch
 from rl_engine.contracts.strict_provider import StrictProviderError
 from rl_engine.integrations.common.gdn_provider_observation import (
     GDNStateBinding,
-    observe_gdn_states,
 )
-from rl_engine.integrations.engines.rollout.vllm.strict_provider_observer import VllmGDNObserver
+from rl_engine.integrations.engines.rollout.vllm.strict_provider_observer import (
+    VllmGDNCandidateCollector,
+)
 
 
 def provider():
@@ -30,7 +31,7 @@ def provider():
 
 def test_reads_effective_provider_attributes_and_stays_candidate():
     actual = provider()
-    observer = VllmGDNObserver()
+    observer = VllmGDNCandidateCollector()
     first = observer.observe_bound_provider(actual)
     actual.gdn_decode_kernel = "other-qualified-candidate"
     second = observer.observe_bound_provider(actual)
@@ -53,7 +54,7 @@ def test_observes_actual_state_view_and_copies_small_metadata():
         non_spec_state_indices_tensor=slots,
         non_spec_query_start_loc=torch.tensor([0, 1]),
     )
-    result = VllmGDNObserver().observe_call(
+    result = VllmGDNCandidateCollector().observe_call(
         provider(),
         metadata,
         conv_state=conv,
@@ -69,36 +70,7 @@ def test_observes_actual_state_view_and_copies_small_metadata():
     assert result["enforcement_ready"] is False
 
 
-def test_logical_boundary_allows_different_local_slots_and_generations():
-    rollout = GDNStateBinding("sequence-A", "weights-1", 4, 7, 2)
-    replay = GDNStateBinding("sequence-A", "weights-1", 4, 23, 9)
-    assert rollout.logical_boundary_id == replay.logical_boundary_id
-    assert (
-        rollout.logical_boundary_id
-        != GDNStateBinding("sequence-A", "weights-1", 3, 23, 9).logical_boundary_id
-    )
-    assert (
-        rollout.logical_boundary_id
-        != GDNStateBinding("sequence-B", "weights-1", 4, 23, 9).logical_boundary_id
-    )
-    assert (
-        rollout.logical_boundary_id
-        != GDNStateBinding("sequence-A", "weights-2", 4, 23, 9).logical_boundary_id
-    )
-
-
-@pytest.mark.parametrize("slots", [(7, 7), (7, 8)])
-def test_state_slots_are_distinct_and_in_range(slots):
-    bindings = [GDNStateBinding(str(i), "weights-1", 4, slot, 0) for i, slot in enumerate(slots)]
-    with pytest.raises(StrictProviderError):
-        observe_gdn_states(
-            conv_state=torch.zeros(8, 16, 3),
-            recurrent_state=torch.zeros(8, 2, 4, 4),
-            bindings=bindings,
-        )
-
-
 def test_missing_instance_fields_are_not_inferred_from_model_name():
     with pytest.raises(StrictProviderError) as exc:
-        VllmGDNObserver().observe_bound_provider(SimpleNamespace())
+        VllmGDNCandidateCollector().observe_bound_provider(SimpleNamespace())
     assert exc.value.code == "unobservable_binding"

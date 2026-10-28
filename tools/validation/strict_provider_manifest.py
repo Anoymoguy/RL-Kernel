@@ -18,14 +18,14 @@ import sys
 import tempfile
 from typing import Any
 
-REPO_ROOT = Path(__file__).resolve().parents[3]
+REPO_ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(REPO_ROOT))
 
 from rl_engine.contracts.strict_provider import (  # noqa: E402
     ProviderLock,
     StrictProviderError,
 )
-from rl_engine.validation.models.strict_provider import (  # noqa: E402
+from rl_engine.validation.common.strict_provider import (  # noqa: E402
     RESULT_SCHEMA,
     read_json,
     validate_run,

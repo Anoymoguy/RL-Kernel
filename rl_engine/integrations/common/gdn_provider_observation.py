@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: Apache-2.0
-"""Collect GDN instance/state facts without claiming a kernel was authorized.
+"""Collect shared GDN state facts without claiming a kernel was authorized.
 
 The bridge owns state lineage. These observations are candidates: a Python
 callable name does not establish the native/JIT artifact actually launched.
@@ -7,7 +7,6 @@ callable name does not establish the native/JIT artifact actually launched.
 
 from __future__ import annotations
 
-from collections.abc import Mapping
 from dataclasses import asdict, dataclass
 from typing import Any
 
@@ -21,7 +20,7 @@ def implementation_name(value: Any) -> str:
     return f"{cls.__module__}.{cls.__qualname__}"
 
 
-def _nonnegative(value: Any, field: str) -> int:
+def nonnegative_integer(value: Any, field: str) -> int:
     if type(value) is not int or value < 0:
         raise StrictProviderError("invalid_observation", "Expected a nonnegative integer", field)
     return value
@@ -42,78 +41,6 @@ def tensor_observation(tensor: torch.Tensor) -> dict[str, Any]:
     }
 
 
-def observe_gdn_instance(provider: Any) -> dict[str, Any]:
-    """Read effective attributes from a bound vLLM GDN instance."""
-    fields = ("num_k_heads", "num_v_heads", "head_k_dim", "head_v_dim", "conv_kernel_size")
-    config = {}
-    for field in fields:
-        value = getattr(provider, field, None)
-        if type(value) is not int or value <= 0:
-            raise StrictProviderError("unobservable_binding", "Missing GDN dimension", field)
-        config[field] = value
-    for field in (
-        "tp_size",
-        "gqa_interleaved_layout",
-        "gdn_prefill_backend",
-        "gdn_decode_kernel",
-        "enable_packed_recurrent_decode",
-        "enable_fused_gdn_decode",
-    ):
-        value = getattr(provider, field, None)
-        if isinstance(value, (str, bool, int)):
-            config[field] = value
-    norm = getattr(provider, "norm", None)
-    if norm is not None:
-        config["norm_implementation"] = implementation_name(norm)
-    chunk = getattr(provider, "chunk_gated_delta_rule", None)
-    if chunk is not None:
-        config["prefill_implementation"] = implementation_name(chunk)
-    return {
-        "implementation": implementation_name(provider),
-        "effective_config": config,
-        "evidence_level": "instance_candidate",
-        "enforcement_ready": False,
-    }
-
-
-def observe_gdn_metadata(metadata: Any) -> dict[str, Any]:
-    """Snapshot small dispatch metadata, including real sequence/slot indices."""
-    get = (
-        metadata.get if isinstance(metadata, Mapping) else lambda key: getattr(metadata, key, None)
-    )
-    result = {}
-    for key in ("num_prefills", "num_decodes", "num_actual_tokens"):
-        result[key] = _nonnegative(get(key), key)
-    prefill, decode = result["num_prefills"], result["num_decodes"]
-    result["phase"] = (
-        "mixed"
-        if prefill and decode
-        else "prefill"
-        if prefill
-        else "decode"
-        if decode
-        else "profile"
-    )
-    for key in (
-        "has_initial_state",
-        "prefill_has_initial_state",
-        "spec_sequence_masks",
-        "non_spec_query_start_loc",
-        "prefill_query_start_loc",
-        "non_spec_state_indices_tensor",
-        "prefill_state_indices",
-    ):
-        value = get(key)
-        if value is None:
-            continue
-        if not isinstance(value, torch.Tensor) or value.ndim > 2:
-            raise StrictProviderError("invalid_observation", "Expected metadata tensor", key)
-        if value.dtype not in (torch.bool, torch.int32, torch.int64):
-            raise StrictProviderError("invalid_observation", "Expected integer/bool metadata", key)
-        result[key] = {**tensor_observation(value), "values": value.detach().cpu().tolist()}
-    return result
-
-
 @dataclass(frozen=True)
 class GDNStateBinding:
     """Bridge-supplied lineage, not something inferred from a tensor address."""
@@ -130,7 +57,7 @@ class GDNStateBinding:
             if not isinstance(value, str) or not value.strip():
                 raise StrictProviderError("invalid_observation", "Missing state identity", field)
         for field in ("processed_tokens", "slot", "slot_generation"):
-            _nonnegative(getattr(self, field), field)
+            nonnegative_integer(getattr(self, field), field)
 
     def to_dict(self):
         return asdict(self)

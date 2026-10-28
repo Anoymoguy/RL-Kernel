@@ -11,11 +11,9 @@ import sys
 import pytest
 
 from rl_engine.contracts.strict_provider import ProviderLock
-from tests.validation.models.test_strict_provider import Bundle
+from tests.helpers.strict_provider import Bundle
 
-SCRIPT = (
-    Path(__file__).resolve().parents[2] / "tools/validation/models/qwen3_next_provider_manifest.py"
-)
+SCRIPT = Path(__file__).resolve().parents[2] / "tools/validation/strict_provider_manifest.py"
 
 
 def run_cli(*args):
