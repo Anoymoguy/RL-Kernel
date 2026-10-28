@@ -23,6 +23,28 @@ from rl_engine.reference.linear_attn.gated_delta_rule import NULL_BLOCK_ID, _val
 __all__ = ["CausalConv1dUpdateOp"]
 
 
+class _SiluFp32(torch.autograd.Function):
+    """``acc / (1 + exp(-acc))`` in the forward, a backward that cannot overflow.
+
+    ``exp(-acc)`` overflows FP32 for ``acc < -88.7``. The forward then still returns a
+    finite ``-0.``, but autograd's backward of the same expression multiplies ``inf`` by
+    ``0`` and returns NaN. The forward is kept as is, so the values stay the ones the
+    provider comparison was made against; the backward is ``s * (1 + acc * (1 - s))``
+    with ``s = sigmoid(acc)``, which is finite for every finite ``acc``.
+    """
+
+    @staticmethod
+    def forward(ctx, acc: torch.Tensor) -> torch.Tensor:
+        ctx.save_for_backward(acc)
+        return acc / (1.0 + torch.exp(-acc))
+
+    @staticmethod
+    def backward(ctx, grad_out: torch.Tensor) -> torch.Tensor:
+        (acc,) = ctx.saved_tensors
+        s = torch.sigmoid(acc)
+        return grad_out * (s * (1.0 + acc * (1.0 - s)))
+
+
 class CausalConv1dUpdateOp:
     """One decode token through the paged causal-conv1d cache.
 
@@ -177,7 +199,7 @@ class CausalConv1dUpdateOp:
             product = window[..., tap] * weight[:, tap].unsqueeze(0)
             acc = acc + product.float()
         if activation in ("silu", "swish"):
-            acc = acc / (1.0 + torch.exp(-acc))
+            acc = _SiluFp32.apply(acc)
 
         out[rows] = acc
         rolled = window[..., 1:]
