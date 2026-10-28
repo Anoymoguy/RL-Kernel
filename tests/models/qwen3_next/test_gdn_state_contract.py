@@ -52,6 +52,9 @@ def test_invalid_cache_indices_are_rejected(kind, indices, message):
     "kind, indices",
     [
         ("conv", torch.tensor([0, 0, 0])),
+        # The two ops differ on purpose: the GDN provider skips every index <= 0, while
+        # vLLM's conv provider skips only 0 and a negative conv index is rejected below
+        # (see NULL_BLOCK_ID in gated_delta_rule.py).
         ("gdn", torch.tensor([0, -1, 0])),
         ("conv", torch.empty(0, dtype=torch.int64)),
         ("gdn", torch.empty(0, dtype=torch.int64)),

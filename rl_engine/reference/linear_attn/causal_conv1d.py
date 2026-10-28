@@ -55,10 +55,14 @@ class CausalConv1dUpdateOp:
     ``conv_state`` ``[num_blocks, dim, W-1]``  paged; ``dim_first`` layout
     ``weight``     ``[dim, W]``
     ``bias``       ``[dim]`` or ``None``
-    ``indices``    ``[B]``                     ``<= 0`` skips (vLLM: ``== 0``)
+    ``indices``    ``[B]``                     ``== 0`` skips (as vLLM); ``< 0`` is rejected
     ============== ========================== ==========================
 
     Returns ``(out, conv_state)``; the state is updated out of place.
+
+    A skipped row (index ``0``) leaves its cache block unchanged and gets an all-zero
+    output row. vLLM's kernel leaves ``out`` untouched for such a row instead, so a
+    comparison against the provider must not include skipped rows.
     """
 
     def __call__(
@@ -180,7 +184,10 @@ class CausalConv1dUpdateOp:
 
         active = conv_state_indices != NULL_BLOCK_ID
         out = torch.zeros(x.shape, dtype=torch.float32, device=x.device)
-        new_state = conv_state.clone()  # the cache dtype is the contract here
+        # The cache dtype is the contract here. `state` above is a view of the caller's
+        # `conv_state` (transposed for the SD layout) and is only read; every write goes
+        # to this clone, so the caller's cache is never modified.
+        new_state = conv_state.clone()
         if not bool(active.any()):
             return out.to(output_dtype), new_state
 

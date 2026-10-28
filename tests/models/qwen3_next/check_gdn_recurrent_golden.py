@@ -424,10 +424,31 @@ def test_recurrent_forward_fp32_widens_the_state(state_dtype):
     )
     assert out.dtype is torch.float32 and state.dtype is torch.float32
 
+    # Independent recomputation: the same recurrence entered through the ordinary
+    # `forward` with every input, the cache included, already widened to fp32. Nothing
+    # on that path is rounded to bf16, so forward_fp32 must give the same values.
+    want_out, want_state = op.forward(
+        inp["mixed_qkv"].float(),
+        inp["a"].float(),
+        inp["b"].float(),
+        inp["A_log"],
+        inp["dt_bias"],
+        inp["state"].float(),
+        inp["indices"],
+        scale=_SCALE,
+        num_k_heads=_H,
+    )
+    assert want_out.dtype is torch.float32 and want_state.dtype is torch.float32
+    assert torch.equal(out, want_out.reshape(out.shape))
+    assert torch.equal(state, want_state)
+
     rounded, _ = _run_golden(inp)
     if state_dtype is torch.bfloat16:
         # The rounded path went through bf16; the fp32 path did not.
         assert not torch.equal(rounded.float(), out)
+    else:
+        # An fp32 cache has nothing to widen: the rounded path is this output cast to bf16.
+        assert torch.equal(rounded, out.to(rounded.dtype))
 
 
 def test_recurrent_call_matches_forward():
@@ -449,28 +470,41 @@ def test_recurrent_call_matches_forward():
 
 
 def test_recurrent_without_in_kernel_l2norm_differs():
-    """`use_qk_l2norm=False` is the prefill convention and must be reachable."""
+    """`use_qk_l2norm=False` is the prefill convention and must be reachable.
+
+    q and k are scaled so their norms are far from 1. The normalizing path must equal
+    the raw path fed q and k that were normalized outside the op, and the raw path on
+    the original q and k must differ from it.
+    """
     op = GatedDeltaRuleRecurrentStepOp()
-    inp = _inputs(4, 6, torch.float32, torch.bfloat16, seed=3)
-    common = (
-        inp["mixed_qkv"],
-        inp["a"],
-        inp["b"],
-        inp["A_log"],
-        inp["dt_bias"],
-    )
-    normed, _ = op.forward(
-        *common, inp["state"].clone(), inp["indices"], scale=_SCALE, num_k_heads=_H
-    )
-    raw, _ = op.forward(
-        *common,
-        inp["state"].clone(),
-        inp["indices"],
-        scale=_SCALE,
-        num_k_heads=_H,
-        use_qk_l2norm=False,
-    )
-    assert not torch.equal(normed, raw)
+    inp = _inputs(4, 6, torch.float32, torch.float32, seed=3)
+    qk_dim = 2 * _H * _K
+    mixed = inp["mixed_qkv"].clone()
+    mixed[:, :qk_dim] *= 3.0
+    heads = mixed[:, :qk_dim].reshape(mixed.shape[0], 2 * _H, _K)
+    norms = torch.sqrt((heads * heads).sum(-1) + 1e-6).unsqueeze(-1)
+    assert float(norms.min()) > 2.0  # the inputs really are not unit-norm
+    prenormed = mixed.clone()
+    prenormed[:, :qk_dim] = (heads / norms).reshape(mixed.shape[0], qk_dim)
+
+    def run(packed, use_qk_l2norm):
+        out, _ = op.forward(
+            packed,
+            inp["a"],
+            inp["b"],
+            inp["A_log"],
+            inp["dt_bias"],
+            inp["state"].clone(),
+            inp["indices"],
+            scale=_SCALE,
+            num_k_heads=_H,
+            use_qk_l2norm=use_qk_l2norm,
+        )
+        return out
+
+    normed = run(mixed, True)
+    torch.testing.assert_close(normed, run(prenormed, False), rtol=1e-5, atol=1e-6)
+    assert not torch.allclose(normed, run(mixed, False), rtol=1e-3, atol=1e-4)
 
 
 def test_conv_dim_first_false_matches_the_transposed_layout():
