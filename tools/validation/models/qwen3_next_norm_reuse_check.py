@@ -20,8 +20,8 @@ tree):
   ``tools/validation/operators/check_gradient_invariance.py``) with the norm manifest and the
   arguments ``ci/scripts/run_ws1_gtest.sh`` uses), unchanged, with the CUDA candidate replaced by a
   subclass of the rl-kernel op whose forward and backward call the other library. The subclass
-  keeps the op's ``parameter_vjp_contributions_fp32``, so the singleton-aggregate check
-  compares that library's ``dweight`` with the same FP32 row contributions.
+  drops the op's ``parameter_vjp_contributions_fp32``, so every C4 ``dweight`` comparison,
+  singleton-aggregate included, uses the ``dweight`` that library's own backward returns.
 
     python tools/validation/models/qwen3_next_norm_reuse_check.py --op qwen3_next_rms_norm \\
         --out docs/usage/evidence/qwen3-next-norm-reuse-b200/qwen3_next_rms_norm.json \\
@@ -259,6 +259,8 @@ def candidates(op: str) -> dict[str, dict[str, Any]]:
             source, fn, backward = factory()
             out[name] = {"source": source, "fn": fn, "backward": backward}
         except Exception as exc:  # noqa: BLE001 - optional library missing or unusable
+            if name == "rl_kernel":
+                raise RuntimeError(f"Required rl_kernel candidate is unavailable: {exc}") from exc
             out[name] = {"unavailable": f"{type(exc).__name__}: {exc}"[:300]}
     return out
 
@@ -345,8 +347,7 @@ def batch_invariance(op: str, cand: dict[str, Any], quick: bool) -> dict[str, An
         inp, ups = _inputs(op, seed, big), ups_for(seed, big)
         fo, fg = _run(fn, inp, rows, grads, ups)
         for sb in subs:
-            step = sb if sb >= 1024 else max(sb, big // 512)
-            for start in range(0, big, step):
+            for start in range(0, big, sb):
                 idx = torch.arange(start, min(start + sb, big), device=DEV)
                 o, g = _run(fn, inp, rows, grads, ups, idx)
                 checked += 1
@@ -357,6 +358,7 @@ def batch_invariance(op: str, cand: dict[str, Any], quick: bool) -> dict[str, An
     res["full_vs_sub_batches"] = {
         "full_batch": big,
         "sub_batch_sizes": list(subs),
+        "coverage": "every_row_per_sub_batch_size",
         "sub_batches": checked,
         "fwd_differ": fwd,
         "rowgrad_differ": grd,
@@ -452,12 +454,43 @@ def accuracy_latency(op: str, cand: dict[str, Any], quick: bool) -> dict[str, An
 # --------------------------------------------------------------------------- #
 
 
+def _swapped_operator(op: str, fn):
+    """The rl-kernel CUDA op with its forward and backward replaced by ``fn``.
+
+    The C4 harness folds ``parameter_vjp_contributions_fp32`` in place of the autograd
+    ``dweight`` whenever an op declares it. Those contributions come from the rl-kernel
+    kernel, so an inherited hook would let C4 judge rl-kernel's ``dweight`` instead of the
+    other library's. Clearing it makes C4 use ``dweight`` from the library's own backward.
+    """
+
+    from rl_engine.backends.cuda.norm import rmsnorm as R
+
+    if op == "qwen3_next_rms_norm":
+
+        class Swapped(R.Qwen3NextRMSNormCudaOp):
+            parameter_vjp_contributions_fp32 = None
+
+            def forward(self, x, weight, *, eps=EPS):
+                return fn(x.reshape(-1, x.shape[-1]), weight).view_as(x)
+
+    else:
+
+        class Swapped(R.Qwen3NextRMSNormGatedCudaOp):
+            parameter_vjp_contributions_fp32 = None
+
+            def __call__(self, x, weight, gate, *, eps=EPS):
+                return self.forward(x, weight, gate, eps=eps)
+
+            def forward(self, x, weight, gate, *, eps=EPS):
+                return fn(x, gate, weight)
+
+    return Swapped()
+
+
 def _gate_child(which: str, op: str, impl: str) -> None:
     """Run the canonical C3/C4 CLI with the CUDA candidate replaced by ``impl``."""
 
     import importlib.util
-
-    from rl_engine.backends.cuda.norm import rmsnorm as R
 
     path = REPO_ROOT / "tools/validation/operators" / f"check_{which}_invariance.py"
     spec = importlib.util.spec_from_file_location("gate", path)
@@ -480,25 +513,12 @@ def _gate_child(which: str, op: str, impl: str) -> None:
     spec.loader.exec_module(gate)
     if impl != "rl_kernel":
         fn = candidates(op)[impl]["fn"]
-        if op == "qwen3_next_rms_norm":
-
-            class Swapped(R.Qwen3NextRMSNormCudaOp):
-                def forward(self, x, weight, *, eps=EPS):
-                    return fn(x.reshape(-1, x.shape[-1]), weight).view_as(x)
-
-        else:
-
-            class Swapped(R.Qwen3NextRMSNormGatedCudaOp):
-                def __call__(self, x, weight, gate, *, eps=EPS):
-                    return self.forward(x, weight, gate, eps=eps)
-
-                def forward(self, x, weight, gate, *, eps=EPS):
-                    return fn(x, gate, weight)
-
         original = gate.load_adapter_operator
 
         def load_adapter_operator(op_name, candidate):
-            return Swapped() if candidate == "cuda" else original(op_name, candidate)
+            return (
+                _swapped_operator(op, fn) if candidate == "cuda" else original(op_name, candidate)
+            )
 
         gate.load_adapter_operator = load_adapter_operator
     gate.main()
@@ -607,9 +627,11 @@ def plot(report: dict[str, Any], path: Path) -> None:
     for y, (_, e) in zip(ys, entries):
         bi = e.get("batch_invariance")
         gates = e.get("contract_gates")
-        text = "batch-invariant: " + (
+        text = "checks passed: " + (
             "n/a" if bi is None else ("yes" if bi["batch_invariant"] else "NO")
         )
+        if bi and bi["full_vs_sub_batches"].get("coverage") == "sampled_small_sub_batches":
+            text += " (sampled)"
         if gates and "unavailable" not in gates:
             text += " | C3/C4 gates: " + (
                 "pass" if all(g["passed"] for g in gates.values()) else "FAIL"
@@ -618,7 +640,7 @@ def plot(report: dict[str, Any], path: Path) -> None:
         ax.text(0.02, y, text, va="center", fontsize=8, color="#3aa676" if good else "#d14b4b")
     ax.set_ylim(len(entries) - 0.5, -0.5)
     ax.axis("off")
-    ax.set_title("every-row batch invariance and this repository's gates")
+    ax.set_title("measured batch-invariance checks and this repository's gates")
     fig.savefig(path.with_suffix(".png"), dpi=120)
 
 
