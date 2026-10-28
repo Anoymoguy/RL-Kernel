@@ -278,6 +278,7 @@ def _conv_noact_bf16(check, batches: list[int]) -> dict[str, Any]:
     for batch in batches:
         (b_ref, _), (b_got, _) = bf16_out[batch]
         (d_ref, _), (d_got, _) = fp32_out[batch]
+        assert b_ref.dtype == b_got.dtype == torch.bfloat16, (b_ref.dtype, b_got.dtype)
         differ = torch.nonzero(b_ref.view(torch.int16) != b_got.view(torch.int16)).tolist()
         mismatches = []
         for r, ch in differ:
@@ -408,7 +409,8 @@ def _conv_report_without_fusion(batches: str) -> dict[str, Any]:
             text=True,
             check=True,
         )
-    return json.loads(child.stdout)
+    # The report is the child's last stdout line; libraries may print banners before it.
+    return json.loads(child.stdout.strip().splitlines()[-1])
 
 
 def _fusion_check(on: Any, off: Any) -> dict[str, Any]:

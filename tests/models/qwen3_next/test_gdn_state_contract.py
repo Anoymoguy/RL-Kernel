@@ -79,25 +79,21 @@ def test_gdn_requires_positive_integer_heads(heads):
 
 
 def test_conv_bias_is_accumulated_before_taps():
-    # Adding bias last would yield 1.0 instead of 0.0.
+    # Two products of 3.0 and a bias of 1e8 (fp32 spacing 8 there). Bias first: 1e8 + 3
+    # and 1e8 + 3 both round back to 1e8. Bias last: 3 + 3 = 6 survives, and 6 + 1e8
+    # rounds up to 100000008.
+    state = torch.zeros(2, 1, 1)
+    state[1] = 3.0
     out, _ = CausalConv1dUpdateOp()(
-        torch.tensor([[-1e8]]),
-        torch.zeros(2, 1, 1),
-        torch.tensor([[0.0, 1.0]]),
-        torch.tensor([1]),
-        bias=torch.tensor([1e8]),
-        activation=None,
-    )
-    assert out.item() == 0.0
-    out, _ = CausalConv1dUpdateOp()(
-        torch.tensor([[-1e8]]),
-        torch.ones(2, 1, 1),
+        torch.tensor([[3.0]]),
+        state,
         torch.ones(1, 2),
         torch.tensor([1]),
         bias=torch.tensor([1e8]),
         activation=None,
     )
-    assert out.item() == 0.0
+    assert out.item() == 1e8
+    assert out.item() != (3.0 + 3.0) + 1e8  # what adding the bias last would give
 
 
 def test_conv_bf16_products_round_before_fp32_accumulation():
