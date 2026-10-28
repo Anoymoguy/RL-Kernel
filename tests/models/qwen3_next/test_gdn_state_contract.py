@@ -148,3 +148,14 @@ def test_conv_silu_backward_is_finite_and_matches_torch_silu(tap_weight):
     torch.testing.assert_close(x.grad, acc.grad * tap_weight, rtol=1e-5, atol=1e-30)
     plain = acc.detach() / (1.0 + torch.exp(-acc.detach()))
     assert torch.equal(out.detach(), plain)
+
+
+def test_state_index_helper_skip_rule_is_explicit():
+    # The recurrent rule skips every index <= 0; the conv rule skips only 0, so a negative
+    # index is an active row and fails the range check instead of being dropped.
+    from rl_engine.reference.linear_attn.gated_delta_rule import _validate_state_indices
+
+    indices = torch.tensor([0, -1, 2])
+    _validate_state_indices(indices, 3, 4, indices.device)
+    with pytest.raises(ValueError, match="out of range"):
+        _validate_state_indices(indices, 3, 4, indices.device, skip_negative=False)

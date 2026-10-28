@@ -161,11 +161,14 @@ class CausalConv1dUpdateOp:
             raise ValueError("weight must be 2-D [dim, W] with positive dimensions")
         if x.shape[1] != dim:
             raise ValueError("x and conv_state must have the same dim")
-        _validate_state_indices(conv_state_indices, x.shape[0], state.shape[0], x.device)
         # vLLM's causal_conv1d_update skips only the null block id; a negative entry is
-        # not a null block there. Reject it instead of treating it as inactive.
+        # not a null block there. Reject it instead of treating it as inactive, before
+        # any other check, and validate the rest with the conv rule (only 0 is skipped).
         if bool((conv_state_indices < 0).any()):
             raise ValueError("conv state indices must be >= 0; only the null block id is skipped")
+        _validate_state_indices(
+            conv_state_indices, x.shape[0], state.shape[0], x.device, skip_negative=False
+        )
         for name, tensor in (
             ("x", x),
             ("conv_state", conv_state),

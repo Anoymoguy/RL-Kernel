@@ -339,14 +339,22 @@ def _triton_silu():
 
 
 def _ulp_histogram(a: torch.Tensor, b: torch.Tensor) -> dict[str, int]:
-    """Differing fp32 elements by bit-pattern distance."""
-    d = (a.contiguous().view(torch.int32).long() - b.contiguous().view(torch.int32).long()).abs()
-    d = d[d != 0]
+    """Differing fp32 elements by bit-pattern distance.
+
+    The distance is not a ULP count for elements whose signs differ (a bit-pattern
+    difference across zero is large however close the values are). Those elements are
+    still in ``>4``; ``sign_differs`` counts how many of them there are, and ``>4`` minus
+    ``sign_differs`` is the number of same-sign elements more than 4 ULP apart.
+    """
+    ai, bi = a.contiguous().view(torch.int32).long(), b.contiguous().view(torch.int32).long()
+    d = (ai - bi).abs()
+    differ = d != 0
     return {
         "1": int((d == 1).sum()),
         "2": int((d == 2).sum()),
         "3-4": int(((d == 3) | (d == 4)).sum()),
         ">4": int((d > 4).sum()),
+        "sign_differs": int((differ & ((ai < 0) != (bi < 0))).sum()),
     }
 
 
