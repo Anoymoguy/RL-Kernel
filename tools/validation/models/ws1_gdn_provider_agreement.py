@@ -407,18 +407,33 @@ def _arm_variants(arm: dict[str, Any]) -> list[Any] | None:
 
 
 def _conv_report_without_fusion(batches: str) -> dict[str, Any]:
-    """Rerun the conv arm in a child process that compiles with fusion off."""
+    """Rerun the conv arm in a child process that compiles with fusion off.
+
+    A failed child is returned as ``{"error": ...}`` so that the measurements already
+    taken are still reported; ``main`` then exits non-zero.
+    """
     with tempfile.TemporaryDirectory(prefix="triton-nofusion-") as cache_dir:
         env = dict(os.environ, TRITON_DEFAULT_FP_FUSION="0", TRITON_CACHE_DIR=cache_dir)
-        child = subprocess.run(
-            [sys.executable, str(Path(__file__).resolve()), "--conv-only", "--batches", batches],
-            env=env,
-            stdout=subprocess.PIPE,
-            text=True,
-            check=True,
-        )
-    # The report is the child's last stdout line; libraries may print banners before it.
-    return json.loads(child.stdout.strip().splitlines()[-1])
+        try:
+            child = subprocess.run(
+                [
+                    sys.executable,
+                    str(Path(__file__).resolve()),
+                    "--conv-only",
+                    "--batches",
+                    batches,
+                ],
+                env=env,
+                stdout=subprocess.PIPE,
+                text=True,
+                check=True,
+            )
+            # The report is the child's last stdout line; libraries may print banners before it.
+            return json.loads(child.stdout.strip().splitlines()[-1])
+        except subprocess.CalledProcessError as exc:
+            return {"error": f"fusion-off child exited with status {exc.returncode}"}
+        except (IndexError, ValueError):
+            return {"error": "fusion-off child printed no JSON report on its last stdout line"}
 
 
 def _fusion_check(on: Any, off: Any) -> dict[str, Any]:
@@ -494,11 +509,24 @@ def main() -> int:
     report["conv_silu"] = _conv_silu(check, batches)
     if not args.skip_fusion_off:
         unfused = _conv_report_without_fusion(args.batches)
-        report["conv"] += unfused["conv"]
-        report["conv_kernels"]["fusion_off"] = unfused["conv_kernels"]
-        report["conv_noact_bf16"]["fusion_off"] = unfused["conv_noact_bf16"]
-        report["fusion_check"] = _fusion_check(_arm_variants(fused), _arm_variants(unfused))
+        if "error" in unfused:
+            report["fusion_off_error"] = unfused["error"]
+        else:
+            report["conv"] += unfused["conv"]
+            report["conv_kernels"]["fusion_off"] = unfused["conv_kernels"]
+            report["conv_noact_bf16"]["fusion_off"] = unfused["conv_noact_bf16"]
+            report["fusion_check"] = _fusion_check(_arm_variants(fused), _arm_variants(unfused))
     print(json.dumps(report, indent=2, sort_keys=True))
+    if "fusion_off_error" in report:
+        print(f"FAILED: {report['fusion_off_error']}", file=sys.stderr)
+        return 1
+    if "fusion_check" in report and not report["fusion_check"]["fusion_off_effective"]:
+        print(
+            "FAILED: the fusion-off arm did not compile every conv variant with fusion off "
+            "(or its variants could not be listed); see fusion_check",
+            file=sys.stderr,
+        )
+        return 1
     return 0
 
 

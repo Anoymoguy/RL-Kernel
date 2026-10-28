@@ -346,16 +346,17 @@ def test_conv_output_matches_provider_with_fp32_cache(batch):
 
     Measured by tools/validation/models/ws1_gdn_provider_agreement.py (B200, acf38b6): 0 of 8192
     at B=1, 0 at B=4, 1 of 139264 at B=17, 5 of 524288 at B=64; max|diff| 3.9e-3.
-    The bound is on the magnitude and on a handful of elements rather than on a
-    tight rate --
-    at small batches a single straddling element is already 1.2e-4 of the
-    tensor, which says nothing about accuracy.
+    The bound is on the magnitude and on a few elements rather than on a tight rate:
+    at small batches a single straddling element is already 1.2e-4 of the tensor,
+    which says nothing about accuracy. The element budget scales with the tensor,
+    max(4, numel / 8192): 4 at B=1 and B=4, 17 at B=17, 64 at B=64.
     """
     inp = _conv_inputs(batch, torch.float32, seed=batch)
     (out_ref, _), (out_got, _) = _run_conv_pair(inp)
     mismatch = int((out_got.float().view(torch.int32) != out_ref.float().view(torch.int32)).sum())
     # Regression bounds against the provider, not gate evidence (see the module note).
-    assert mismatch <= 32, f"{mismatch} of {out_got.numel()} elements differ"
+    budget = max(4, out_got.numel() // 8192)
+    assert mismatch <= budget, f"{mismatch} of {out_got.numel()} elements differ (budget {budget})"
     assert (out_got.float() - out_ref.float()).abs().max().item() <= 1e-2
 
 
