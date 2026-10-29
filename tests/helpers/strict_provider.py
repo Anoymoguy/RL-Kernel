@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: Apache-2.0
 # Copyright (c) 2026 RL-Kernel Contributors
-"""CPU mock evidence shared by manifest validator and CLI tests."""
+"""Operator-independent CPU fixtures; ROCm profiles use mocked completion."""
 
 from __future__ import annotations
 
@@ -24,32 +24,32 @@ from rl_engine.validation.common.strict_provider import (
 )
 
 
-def make_plan():
+def make_plan(node="test_operator", *, dtype="float64", accumulator_dtype="float64"):
     return KernelPlan.from_dict(
         {
-            "node": "gdn",
+            "node": node,
             "phase": "prefill",
-            "implementation": "tests.MockGDN",
-            "entrypoint": "tests.MockGDN.recurrent",
+            "implementation": "tests.MockOperator",
+            "entrypoint": f"tests.MockOperator.{node}",
             "code": {
                 "source_inventory_sha256": "a" * 64,
                 "binary_inventory_sha256": "b" * 64,
-                "compiled_kernel_id": "cpu_mock_v1",
+                "compiled_kernel_id": "mock_binary_v1",
                 "compile_key": "fixed_shape_v1",
             },
             "io": {
-                "input_dtype": "float64",
-                "output_dtype": "float64",
+                "input_dtype": dtype,
+                "output_dtype": dtype,
                 "layout": "row_major",
                 "shape_class": "two_rows",
                 "workspace_policy": "none",
             },
             "numerics": {
-                "accumulator_dtype": "float64",
+                "accumulator_dtype": accumulator_dtype,
                 "split_policy": "disabled",
                 "split_count": 1,
                 "reduction_spec": "left_fold_v1",
-                "cast_spec": "no_cast",
+                "cast_spec": "output_cast" if dtype != accumulator_dtype else "no_cast",
                 "atomic_policy": "forbidden",
             },
             "launch": {"tile_config": [1], "graph_state": "eager", "tuning": "fixed"},
@@ -60,8 +60,13 @@ def make_plan():
 class Bundle:
     """Trusted predeclared runner plus separately persisted mock worker evidence."""
 
-    def __init__(self, root: Path):
+    def __init__(self, root: Path, *, node="test_operator", platform_kind="cpu"):
         self.root = root
+        self.node = node
+        is_rocm = platform_kind == "rocm"
+        self.completion_kind = "mock_event" if is_rocm else "synchronous"
+        dtype = "bfloat16" if is_rocm else "float64"
+        accumulator_dtype = "float32" if is_rocm else "float64"
         self.directory = root / "run1" / "attempt1"
         self.directory.mkdir(parents=True)
         self.original = self.directory / "provider.bin"
@@ -76,7 +81,7 @@ class Bundle:
                 }
             ]
         )
-        plan = make_plan().to_dict()
+        plan = make_plan(node, dtype=dtype, accumulator_dtype=accumulator_dtype).to_dict()
         plan["code"]["source_inventory_sha256"] = self.artifacts_id
         plan["code"]["binary_inventory_sha256"] = self.artifacts_id
         plan.pop("plan_id")
@@ -86,8 +91,8 @@ class Bundle:
         self.lock = ProviderLock.from_dict(
             {
                 "schema_version": "rl_kernel.strict_provider.v1",
-                "profile_id": "cpu_mock",
-                "scope": "component.gdn",
+                "profile_id": f"{platform_kind}_mock",
+                "scope": f"component.{node}",
                 "model": {
                     "model_id": "mock_model",
                     "revision": "revision1",
@@ -96,24 +101,24 @@ class Bundle:
                     "shard_inventory_sha256": "3" * 64,
                 },
                 "platform": {
-                    "kind": "cpu",
-                    "gpu_arch": "cpu_mock",
+                    "kind": platform_kind,
+                    "gpu_arch": "gfx942" if is_rocm else "cpu_mock",
                     "torch_build": "cpu_mock",
-                    "hip_runtime": "not_applicable",
+                    "hip_runtime": "mock_hip" if is_rocm else "not_applicable",
                     "driver_identity": "cpu_mock",
                     "triton_build": "not_applicable",
                 },
                 "execution": {
                     "topology": {"tp": 1, "ep": 1, "cp": 1, "pp": 1},
-                    "activation_dtype": "float64",
+                    "activation_dtype": dtype,
                     "graph_mode": "eager",
                     "tuning_policy": "fixed",
                     "fallback_policy": "error",
                     "runtime_settings": {},
                 },
                 "nodes": {
-                    "gdn": {
-                        "semantics_ref": "mock_gdn_v1",
+                    node: {
+                        "semantics_ref": f"mock_{node}_v1",
                         "bindings": {
                             "rollout": binding,
                             "replay": binding,
@@ -127,11 +132,11 @@ class Bundle:
                 },
             }
         )
-        self.inventory = {"0": ["gdn"], "1": ["gdn"]}
+        self.inventory = {"0": [node], "1": [node]}
         self.scope = {
-            "scope_id": "component.gdn",
+            "scope_id": f"component.{node}",
             "kind": "component",
-            "required_nodes": ["gdn"],
+            "required_nodes": [node],
             "inventory_fingerprint": fingerprint(self.inventory),
         }
         self.case = {
@@ -145,7 +150,7 @@ class Bundle:
             },
             "required_calls": [
                 {
-                    "node": "gdn",
+                    "node": node,
                     "phase": "prefill",
                     "layer_id": str(layer),
                     "call_id": "prompt_A",
@@ -185,7 +190,7 @@ class Bundle:
                 "model": self.lock.to_dict()["model"],
                 "platform": self.lock.to_dict()["platform"],
                 "execution": self.lock.to_dict()["execution"],
-                "bindings": {"gdn": binding},
+                "bindings": {node: binding},
                 "weight_snapshot_id": "snapshot1",
             }
             receipt = SnapshotActivationReceipt.from_dict(
@@ -209,8 +214,8 @@ class Bundle:
                 "state": "finished",
                 "snapshot_generation": 0,
                 "snapshot_history": [receipt],
-                "bindings": {"gdn": binding},
-                "observations": {"gdn": observation},
+                "bindings": {node: binding},
+                "observations": {node: observation},
                 "calls": [],
             }
             for layer in range(2):
@@ -219,7 +224,7 @@ class Bundle:
                         "context": {
                             **{k: v for k, v in self.context().items() if k != "lock_id"},
                             "case_id": self.case["case_id"],
-                            "node": "gdn",
+                            "node": node,
                             "phase": "prefill",
                             "layer_id": str(layer),
                             "call_id": "prompt_A",
@@ -237,7 +242,7 @@ class Bundle:
                         "call_ticket_id": f"ticket_{worker['role']}_{layer}",
                         "status": "completed",
                         "states": ["prepared", "authorized", "launched", "completed"],
-                        "completion": {"kind": "synchronous", "status": "completed"},
+                        "completion": {"kind": self.completion_kind, "status": "completed"},
                     }
                 )
             self.summaries.append(summary)

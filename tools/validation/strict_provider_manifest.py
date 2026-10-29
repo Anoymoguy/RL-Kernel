@@ -4,8 +4,8 @@
 
 """Collect candidates, seal locks, and validate identity/configuration provenance.
 
-This CLI does not fabricate a live vLLM/VIME runner. ``enforce`` rejects until a
-real execution adapter supplies resolved calls and completion evidence.
+This CLI reads supplied evidence. ``enforce`` rejects until a real engine adapter
+supplies resolved calls and completion evidence.
 Numerical output comparison belongs to the existing operator/model harness.
 """
 

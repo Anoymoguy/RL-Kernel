@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: Apache-2.0
-"""CPU-side real side effects exercise authorization and terminal failures."""
+"""Check launch side effects and failures on CPU; ROCm completion is mocked."""
 
 from copy import deepcopy
 
@@ -20,10 +20,10 @@ from rl_engine.runtime.strict_provider import StrictProviderSession
 
 def make_plan(**overrides):
     data = {
-        "node": "gdn",
+        "node": "test_operator",
         "phase": "decode",
-        "implementation": "fake.GDN",
-        "entrypoint": "fake.recurrent",
+        "implementation": "fake.Operator",
+        "entrypoint": "fake.forward",
         "code": {
             "source_inventory_sha256": "a" * 64,
             "binary_inventory_sha256": "b" * 64,
@@ -51,12 +51,12 @@ def make_plan(**overrides):
     return KernelPlan.from_dict(data)
 
 
-def make_lock(plan):
+def make_lock(plan, *, platform_kind="cpu"):
     return ProviderLock.from_dict(
         {
             "schema_version": "rl_kernel.strict_provider.v1",
-            "profile_id": "fake-cpu-v1",
-            "scope": "component.gdn",
+            "profile_id": f"fake-{platform_kind}-v1",
+            "scope": f"component.{plan.node}",
             "model": {
                 "model_id": "fake",
                 "revision": "r1",
@@ -65,8 +65,8 @@ def make_lock(plan):
                 "shard_inventory_sha256": "c" * 64,
             },
             "platform": {
-                "kind": "cpu",
-                "gpu_arch": "cpu",
+                "kind": platform_kind,
+                "gpu_arch": "gfx942" if platform_kind == "rocm" else "cpu",
                 "torch_build": "fake-build",
                 "hip_runtime": "fake-hip",
                 "driver_identity": "fake-driver",
@@ -81,10 +81,10 @@ def make_lock(plan):
                 "runtime_settings": {},
             },
             "nodes": {
-                "gdn": {
-                    "semantics_ref": "gdn-v1",
+                plan.node: {
+                    "semantics_ref": f"{plan.node}-v1",
                     "bindings": {
-                        role: {"implementation": "fake.GDN", "artifacts_ref": "d" * 64}
+                        role: {"implementation": plan.implementation, "artifacts_ref": "d" * 64}
                         for role in ("rollout", "replay")
                     },
                     "allowed_plans": {role: [plan.plan_id] for role in ("rollout", "replay")},
@@ -120,7 +120,9 @@ def observation(lock, **changes):
             "role": "rollout",
             "rank": 0,
             "weight_snapshot_id": "s0",
-            "bindings": {"gdn": {"implementation": "fake.GDN", "artifacts_ref": "d" * 64}},
+            "bindings": {
+                node: dict(spec["bindings"]["rollout"]) for node, spec in lock.nodes.items()
+            },
         }
     )
     data.update(changes)
@@ -131,7 +133,7 @@ def context(**changes):
     data = {
         "case_id": "case0",
         "call_id": "decode0",
-        "node": "gdn",
+        "node": "test_operator",
         "phase": "decode",
         "role": "rollout",
         "worker_id": "w0",
@@ -157,7 +159,7 @@ def setup_session():
         weight_snapshot_id="s0",
         snapshot_receipt=receipt(),
     )
-    session.bind("gdn", "rollout", observation(lock))
+    session.bind("test_operator", "rollout", observation(lock))
     return plan, lock, session
 
 
@@ -277,7 +279,7 @@ def test_one_shot_call_cannot_cross_session(setup_session):
         weight_snapshot_id="s0",
         snapshot_receipt=receipt(),
     )
-    other.bind("gdn", "rollout", observation(lock))
+    other.bind("test_operator", "rollout", observation(lock))
     with pytest.raises(StrictProviderError) as error:
         other.execute(call, context(call_id="decode1"))
     assert error.value.code == "call_reused" and len(launches) == 1
@@ -410,7 +412,7 @@ def test_graph_plan_is_rejected_even_if_sealed():
         weight_snapshot_id="s0",
         snapshot_receipt=receipt(),
     )
-    session.bind("gdn", "rollout", observation(lock))
+    session.bind("test_operator", "rollout", observation(lock))
     launches = []
     with pytest.raises(StrictProviderError) as error:
         session.execute(fake_call(plan, launches), context())
@@ -423,11 +425,12 @@ def test_actual_binary_identity_mismatch_at_bind(setup_session):
         lock, role="rollout", worker_id="w0", run_id="run0", attempt="1", weight_snapshot_id="s0"
     )
     wrong = observation(
-        lock, bindings={"gdn": {"implementation": "fake.GDN", "artifacts_ref": "f" * 64}}
+        lock,
+        bindings={"test_operator": {"implementation": "fake.Operator", "artifacts_ref": "f" * 64}},
     )
     with pytest.raises(StrictProviderError) as error:
-        session.bind("gdn", "rollout", wrong)
-    assert error.value.field == "bindings.gdn.artifacts_ref"
+        session.bind("test_operator", "rollout", wrong)
+    assert error.value.field == "bindings.test_operator.artifacts_ref"
     assert session.state == "failed"
 
 
@@ -441,7 +444,7 @@ def test_initial_snapshot_name_does_not_authorize_execution(setup_session):
         attempt="1",
         weight_snapshot_id="s0",
     )
-    session.bind("gdn", "rollout", observation(lock))
+    session.bind("test_operator", "rollout", observation(lock))
     launches = []
     with pytest.raises(StrictProviderError) as error:
         session.execute(fake_call(plan, launches), context())
@@ -486,11 +489,86 @@ def test_gpu_requires_completion_before_launch(setup_session):
         weight_snapshot_id="s0",
         snapshot_receipt=receipt(),
     )
-    session.bind("gdn", "rollout", observation(gpu_lock))
+    session.bind("test_operator", "rollout", observation(gpu_lock))
     launches = []
     with pytest.raises(StrictProviderError) as error:
         session.execute(fake_call(plan, launches), context())
     assert error.value.code == "unobservable_completion" and launches == []
+
+
+@pytest.mark.parametrize(
+    "field", ["gpu_arch", "torch_build", "hip_runtime", "driver_identity", "triton_build"]
+)
+def test_rocm_worker_platform_must_match_the_lock(field):
+    plan = make_plan()
+    lock = make_lock(plan, platform_kind="rocm")
+    session = StrictProviderSession(
+        lock,
+        role="rollout",
+        worker_id="w0",
+        run_id="run0",
+        attempt="1",
+        weight_snapshot_id="s0",
+        snapshot_receipt=receipt(),
+    )
+    actual = observation(lock).to_dict()
+    actual["platform"][field] = "different-runtime"
+    with pytest.raises(StrictProviderError) as error:
+        session.bind(plan.node, "rollout", WorkerObservation.from_dict(actual))
+    assert error.value.code == "binding_mismatch"
+    assert error.value.field == f"observation.platform.{field}"
+    assert session.state == "failed"
+
+
+def test_rocm_session_keeps_operator_bindings_and_calls_separate():
+    """Three mock operators share a session; no ROCm kernels are executed."""
+    nodes = ("full_attention", "dense_gemm", "moe_combine")
+    plans = {
+        node: make_plan(
+            node=node, implementation=f"fake.{node}.Provider", entrypoint=f"fake.{node}"
+        )
+        for node in nodes
+    }
+    data = make_lock(plans[nodes[0]], platform_kind="rocm").to_dict()
+    data.pop("lock_id")
+    data["scope"] = "component.test_operators"
+    data["nodes"] = {node: make_lock(plan).to_dict()["nodes"][node] for node, plan in plans.items()}
+    lock = ProviderLock.from_dict(data)
+    session = StrictProviderSession(
+        lock,
+        role="rollout",
+        worker_id="w0",
+        run_id="run0",
+        attempt="1",
+        weight_snapshot_id="s0",
+        snapshot_receipt=receipt(),
+    )
+    actual = observation(lock)
+    for node in nodes:
+        session.bind(node, "rollout", actual)
+    launches = []
+    completions = []
+
+    def complete(output):
+        completions.append(output)
+        return CompletionReceipt(True, kind="mock_event")
+
+    for node, plan in plans.items():
+        call_context = context(node=node)
+        call = fake_call(
+            plan,
+            launches,
+            metadata={"operator": node, "split": 1},
+            completion=complete,
+            call_context=call_context,
+        )
+        assert session.execute(call, call_context) == 42
+    summary = session.finish()
+    assert [launch["operator"] for launch in launches] == list(nodes)
+    assert len(completions) == len(nodes)
+    assert set(summary["bindings"]) == set(nodes)
+    assert [call["context"]["node"] for call in summary["calls"]] == list(nodes)
+    assert [call["plan_id"] for call in summary["calls"]] == [p.plan_id for p in plans.values()]
 
 
 def test_launch_exception_cannot_be_reused_or_finished(setup_session):
@@ -573,7 +651,7 @@ def test_plan_cpu_label_cannot_override_gpu_completion_requirement(setup_session
         weight_snapshot_id="s0",
         snapshot_receipt=receipt(),
     )
-    session.bind("gdn", "rollout", observation(gpu_lock))
+    session.bind("test_operator", "rollout", observation(gpu_lock))
     launches = []
     completion = None
     if completion_kind is not None:
@@ -601,8 +679,8 @@ def test_binding_extensions_are_locked_while_diagnostics_are_not(setup_session):
         snapshot_receipt=receipt(),
     )
     observed = observation(lock, diagnostics={"backend_display_name": "AITER"})
-    session.bind("gdn", "rollout", observed)
-    assert session.finish()["observations"]["gdn"]["diagnostics"] == {
+    session.bind("test_operator", "rollout", observed)
+    assert session.finish()["observations"]["test_operator"]["diagnostics"] == {
         "backend_display_name": "AITER"
     }
     other = StrictProviderSession(
@@ -615,7 +693,7 @@ def test_binding_extensions_are_locked_while_diagnostics_are_not(setup_session):
         snapshot_receipt=receipt(),
     )
     observed_data = observed.to_dict()
-    observed_data["bindings"]["gdn"]["backend_display_name"] = "AITER"
+    observed_data["bindings"]["test_operator"]["backend_display_name"] = "AITER"
     with pytest.raises(StrictProviderError) as error:
-        other.bind("gdn", "rollout", WorkerObservation.from_dict(observed_data))
-    assert error.value.field == "bindings.gdn.backend_display_name"
+        other.bind("test_operator", "rollout", WorkerObservation.from_dict(observed_data))
+    assert error.value.field == "bindings.test_operator.backend_display_name"

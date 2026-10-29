@@ -7,6 +7,8 @@ An observer must resolve the real branch once, capture the dispatch arguments,
 and expose the same selection through ``plan`` and ``launch``. A model forward
 hook which guesses a branch from configuration does not satisfy this protocol.
 These checks catch integration mistakes; they do not sandbox Python callbacks.
+Operator-specific state layouts and metadata extraction belong to the adapter.
+The common wrapper accepts the resolved plan and callbacks for any operator.
 """
 
 from __future__ import annotations

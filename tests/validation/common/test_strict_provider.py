@@ -216,12 +216,23 @@ def test_component_cannot_claim_full_model_by_changing_label(bundle):
     assert exc.value.code == "unsupported_scope"
 
 
-def test_real_session_finish_is_consumable_without_reconstructing_coverage(bundle):
+@pytest.mark.parametrize("node", ["full_attention", "dense_gemm", "moe_combine"])
+@pytest.mark.parametrize("platform_kind", ["cpu", "rocm"])
+def test_operator_sessions_produce_consumable_evidence(tmp_path, node, platform_kind):
+    """Exercise both workers with callbacks, not native operator/GPU kernels."""
     from rl_engine.contracts.strict_provider import CallContext, WorkerObservation
-    from rl_engine.integrations.common.provider_observer import ResolvedCall
+    from rl_engine.integrations.common.provider_observer import CompletionReceipt, ResolvedCall
     from rl_engine.runtime.strict_provider import StrictProviderSession
 
+    bundle = Bundle(tmp_path, node=node, platform_kind=platform_kind)
     summaries = []
+    launches = []
+    completions = []
+
+    def complete(output):
+        completions.append(output)
+        return CompletionReceipt(True, kind=bundle.completion_kind)
+
     for template in bundle.summaries:
         worker = {k: template[k] for k in ("worker_id", "role", "rank")}
         receipt = SnapshotActivationReceipt.from_dict(template["snapshot_history"][-1])
@@ -234,17 +245,23 @@ def test_real_session_finish_is_consumable_without_reconstructing_coverage(bundl
             snapshot_receipt=receipt,
         )
         session.bind(
-            "gdn", worker["role"], WorkerObservation.from_dict(template["observations"]["gdn"])
+            node, worker["role"], WorkerObservation.from_dict(template["observations"][node])
         )
         for call in template["calls"]:
             call["context"]["call_id"] = f"prompt_layer_{call['context']['layer_id']}"
             context = CallContext.from_dict(call["context"])
             output = object()
+
+            def launch(output=output):
+                launches.append(output)
+                return output
+
             resolved = ResolvedCall(
                 bundle.plan,
-                lambda output=output: output,
+                launch,
                 call_context=context,
                 recheck=lambda: {"actual_shape": [2]},
+                completion=complete,
             )
             assert session.execute(resolved, context) is output
         summaries.append(session.finish())
@@ -254,7 +271,11 @@ def test_real_session_finish_is_consumable_without_reconstructing_coverage(bundl
     bundle.expectation.pop("expectation_id")
     bundle.expectation["expectation_id"] = fingerprint(bundle.expectation)
     bundle.save()
-    assert bundle.validate()["manifest_enforcement"] == "passed"
+    result = bundle.validate()
+    assert result["manifest_enforcement"] == "passed"
+    assert result["call_count"] == 4
+    assert len(launches) == 4 and completions == launches
+    assert result["numerical_parity"] == result["hardware_validation"] == "not_evaluated"
 
 
 @pytest.mark.parametrize("mutation", ["inventory_id", "unrelated_file", "logical_path"])
@@ -362,7 +383,7 @@ def test_gpu_lock_rejects_synchronous_completion_from_worker_summary(bundle):
     bundle.expectation["expectation_id"] = fingerprint(bundle.expectation)
     for summary in bundle.summaries:
         summary["lock_id"] = bundle.lock.lock_id
-        summary["observations"]["gdn"]["platform"]["kind"] = "rocm"
+        summary["observations"]["test_operator"]["platform"]["kind"] = "rocm"
     bundle.save()
     with pytest.raises(StrictProviderError) as exc:
         bundle.validate()
