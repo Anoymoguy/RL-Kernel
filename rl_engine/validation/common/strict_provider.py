@@ -1,11 +1,13 @@
 # SPDX-License-Identifier: Apache-2.0
 # Copyright (c) 2026 RL-Kernel Contributors
 
-"""Independent acceptance of a predeclared strict-provider execution.
+"""Validate strict-provider identity, configuration and execution provenance.
 
 The runner fixes the expectation *before* execution. Coverage is never inferred
-from traces, and numerical acceptance reads actual, hashed output payloads.
-JSON comparisons qualify the serialized CPU payload only, not GPU bitwise parity.
+from traces. Call records must identify the declared inputs/state boundary and
+the allowed execution plan. Numerical output acceptance belongs to the existing
+operator/model harness; this module does not accept or compare output values.
+Evidence checks rely on trusted adapters; they do not establish GPU qualification.
 """
 
 from __future__ import annotations
@@ -14,10 +16,8 @@ from collections import Counter
 from collections.abc import Mapping, Sequence
 import hashlib
 import json
-import math
 from pathlib import Path
 import re
-import struct
 from typing import Any
 
 from rl_engine.contracts.strict_provider import (
@@ -35,7 +35,6 @@ from rl_engine.contracts.strict_provider import (
 
 EXPECTATION_SCHEMA = "rl_kernel.strict_provider.expectation.v1"
 SUMMARY_SCHEMA = "rl_kernel.strict_provider.summary.v1"
-OUTPUT_SCHEMA = "rl_kernel.strict_provider.output.v1"
 CASES_SCHEMA = "rl_kernel.strict_provider.cases.v1"
 ARTIFACTS_SCHEMA = "rl_kernel.strict_provider.artifacts.v1"
 RESULT_SCHEMA = "rl_kernel.strict_provider.result.v1"
@@ -460,6 +459,7 @@ def _verify_summary(
     observed: Counter = Counter()
     alignments: dict[tuple[Any, ...], list[str]] = {}
     tickets: set[str] = set()
+    cases = {case["case_id"]: case for case in expectation["cases"]}
     for call in calls:
         context = CallContext.from_dict(_dict(call.get("context"))).to_dict()
         if call.get("context_id") != fingerprint(context):
@@ -471,6 +471,18 @@ def _verify_summary(
         for field in ("worker_id", "role", "run_id", "attempt", "weight_snapshot_id"):
             if context.get(field) != summary[field]:
                 _reject("stale_evidence", "Call context differs from worker summary", field)
+        case = cases.get(context["case_id"])
+        if case is None:
+            _reject("invalid_coverage", "Call belongs to an undeclared case", context["case_id"])
+        actual_context = context.get("metadata", {}).get("comparison_context")
+        if not isinstance(actual_context, Mapping) or canonical_json(
+            actual_context
+        ) != canonical_json(case["comparison_context"]):
+            _reject(
+                "execution_context_mismatch",
+                "Call inputs/state boundary differ from the predeclared case",
+                "context.metadata.comparison_context",
+            )
         context["rank"] = summary["rank"]
         key = _call_key(context)
         if key in observed:
@@ -525,110 +537,15 @@ def _verify_summary(
     return observed, alignments
 
 
-def _numeric_payload(payload: Any) -> tuple[str, list[int], list[int | float]]:
-    if not isinstance(payload, dict) or set(payload) != {"dtype", "shape", "data"}:
-        _reject("invalid_numeric_evidence", "Output must contain dtype, shape and actual data")
-    dtype, shape, values = payload["dtype"], payload["shape"], payload["data"]
-    if dtype not in {"float64", "int64"}:
-        _reject("unsupported_numeric_format", "JSON payload supports float64 or int64 only")
-    if not isinstance(shape, list) or any(type(n) is not int or n < 0 for n in shape):
-        _reject("invalid_numeric_evidence", "Invalid output shape")
-    if not isinstance(values, list) or not values or math.prod(shape) != len(values):
-        _reject("empty_numeric_evidence", "Output data must be nonempty and match shape")
-    for value in values:
-        if type(value) not in {int, float}:
-            _reject("nonfinite_evidence", "Output must contain finite numeric values")
-        try:
-            finite = math.isfinite(value)
-        except OverflowError:
-            finite = False
-        if not finite:
-            _reject("nonfinite_evidence", "Output must contain finite numeric values")
-        if dtype == "int64" and (type(value) is not int or not -(2**63) <= value < 2**63):
-            _reject("invalid_numeric_evidence", "Invalid int64 value")
-        if dtype == "float64":
-            try:
-                struct.pack("!d", value)
-            except (OverflowError, struct.error):
-                _reject("nonfinite_evidence", "Output exceeds finite float64 range")
-    return dtype, shape, values
-
-
-def _compare_outputs(
-    outputs: list[dict[str, Any]], expectation: Mapping[str, Any], require_numerical: bool
-) -> tuple[str, int]:
-    if not outputs:
-        if require_numerical:
-            _reject("missing_numeric_evidence", "Numerical acceptance requires actual outputs")
-        return "not_evaluated", 0
-    cases = {c["case_id"]: c for c in expectation["cases"]}
-    roster = {w["worker_id"]: w for w in expectation["worker_roster"]}
-    expected_pairs = {
-        (case, role, rank)
-        for case in cases
-        for role, rank in ((w["role"], w["rank"]) for w in roster.values())
-    }
-    indexed: dict[tuple[str, str, int], dict[str, Any]] = {}
-    for output in outputs:
-        _check_context(output, expectation)
-        if output.get("schema_version") != OUTPUT_SCHEMA:
-            _reject("invalid_numeric_evidence", "Unknown output payload schema")
-        worker = roster.get(output.get("worker_id"))
-        if (
-            not worker
-            or type(output.get("rank")) is not int
-            or any(output.get(k) != worker[k] for k in ("role", "rank"))
-        ):
-            _reject("invalid_numeric_evidence", "Output belongs to an unexpected worker")
-        key = (output.get("case_id"), output["role"], output["rank"])
-        if key not in expected_pairs or key in indexed:
-            _reject("duplicate_or_unknown_output", "Output pair is duplicate or unexpected")
-        case = cases[key[0]]
-        if canonical_json(output.get("comparison_context")) != canonical_json(
-            case["comparison_context"]
-        ):
-            _reject("pair_context_mismatch", "Output does not match fixed comparison context")
-        if not isinstance(output.get("outputs"), dict) or set(output["outputs"]) != set(
-            case["output_names"]
-        ):
-            _reject("missing_numeric_evidence", "Output names differ from fixed case")
-        for payload in output["outputs"].values():
-            _numeric_payload(payload)
-        indexed[key] = output
-    if set(indexed) != expected_pairs:
-        _reject("missing_numeric_evidence", "Not every case/worker has an output payload")
-    count = 0
-    ranks = {w["rank"] for w in roster.values()}
-    for case_id, case in cases.items():
-        for rank in ranks:
-            left = indexed[(case_id, "rollout", rank)]["outputs"]
-            right = indexed[(case_id, "replay", rank)]["outputs"]
-            for name in case["output_names"]:
-                ld, ls, lv = _numeric_payload(left[name])
-                rd, rs, rv = _numeric_payload(right[name])
-                if (ld, ls) != (rd, rs):
-                    _reject("numeric_mismatch", "Output dtype or shape differs", name)
-                for a, b in zip(lv, rv, strict=True):
-                    equal = a == b
-                    if case["numerical_policy"] == "json_float64_bits" and ld == "float64":
-                        equal = struct.pack("!d", a) == struct.pack("!d", b)
-                    if not equal:
-                        _reject("numeric_mismatch", "Serialized numerical outputs differ", name)
-                count += len(lv)
-    return "passed", count
-
-
 def validate_run(
     lock: ProviderLock | Mapping[str, Any],
     expectation: Mapping[str, Any],
     worker_summaries: Sequence[Mapping[str, Any]],
     evidence_root: str | Path,
     *,
-    output_artifacts: Sequence[Mapping[str, Any]] = (),
     case_results: Sequence[Mapping[str, Any]] = (),
-    require_numerical: bool = False,
 ) -> dict[str, Any]:
-    """Accept hashed artifacts, or raise a structured rejection; never trust passed flags."""
+    """Check manifest evidence; numerical and hardware acceptance remain unevaluated."""
     lock = lock if isinstance(lock, ProviderLock) else ProviderLock.from_dict(dict(lock))
     expectation = _dict(expectation)
     identity = expectation.get("expectation_id")
@@ -690,8 +607,6 @@ def validate_run(
                 _reject("mandatory_case_failed", "Mandatory case failed, skipped or ran zero tests")
     if executed_cases != required_cases:
         _reject("missing_case_results", "Mandatory cases did not all execute")
-    outputs = [_load_artifact(ref, root, expectation, seen) for ref in output_artifacts]
-    numerical, elements = _compare_outputs(outputs, expectation, require_numerical)
     result = {
         "schema_version": RESULT_SCHEMA,
         "status": "completed",
@@ -701,19 +616,17 @@ def validate_run(
         "attempt": expectation["attempt"],
         "weight_snapshot_id": expectation["weight_snapshot_id"],
         "scope": expectation["scope"]["scope_id"],
+        "validation_scope": "identity_configuration_provenance",
         "manifest_enforcement": "passed",
         "coverage": "passed",
-        "numerical_parity": numerical,
-        "numeric_evidence_format": "serialized_json_cpu_values",
+        "numerical_parity": "not_evaluated",
         "hardware_validation": "not_evaluated",
-        "compared_elements": elements,
         "case_count": len(required_cases),
         "worker_count": len(received),
         "call_count": sum(observed.values()),
         "evidence": {
             "worker_summaries": list(worker_summaries),
             "case_results": list(case_results),
-            "output_artifacts": list(output_artifacts),
         },
     }
     result["result_id"] = fingerprint(result)

@@ -17,7 +17,6 @@ from rl_engine.contracts.strict_provider import (
 from rl_engine.validation.common.strict_provider import (
     ARTIFACTS_SCHEMA,
     CASES_SCHEMA,
-    OUTPUT_SCHEMA,
     SUMMARY_SCHEMA,
     artifact_reference,
     build_expectation,
@@ -157,8 +156,6 @@ class Bundle:
                 for role in ("rollout", "replay")
                 for layer in range(2)
             ],
-            "output_names": ["recurrent_state"],
-            "numerical_policy": "json_exact",
         }
         self.roster = [
             {"worker_id": role + "0", "role": role, "rank": 0} for role in ("rollout", "replay")
@@ -182,7 +179,6 @@ class Bundle:
             identity_artifacts=[inventory_ref],
         )
         self.summaries = []
-        self.outputs = []
         for worker in self.roster:
             observation = {
                 **worker,
@@ -229,6 +225,9 @@ class Bundle:
                             "call_id": "prompt_A",
                             "role": worker["role"],
                             "worker_id": worker["worker_id"],
+                            "metadata": {
+                                "comparison_context": deepcopy(self.case["comparison_context"])
+                            },
                         },
                         "plan": self.plan.to_dict(),
                         "plan_id": self.plan.plan_id,
@@ -242,18 +241,6 @@ class Bundle:
                     }
                 )
             self.summaries.append(summary)
-            self.outputs.append(
-                {
-                    "schema_version": OUTPUT_SCHEMA,
-                    **self.context(),
-                    **worker,
-                    "case_id": self.case["case_id"],
-                    "comparison_context": deepcopy(self.case["comparison_context"]),
-                    "outputs": {
-                        "recurrent_state": {"dtype": "float64", "shape": [2], "data": [1.25, -0.0]}
-                    },
-                }
-            )
         self.report = {
             "schema_version": CASES_SCHEMA,
             **self.context(),
@@ -294,18 +281,15 @@ class Bundle:
         self.summary_refs = [
             self.write(f"worker_{i}.json", s) for i, s in enumerate(self.summaries)
         ]
-        self.output_refs = [self.write(f"output_{i}.json", o) for i, o in enumerate(self.outputs)]
         self.report_refs = [self.write("cases.json", self.report)]
 
-    def validate(self, *, numerical=True):
+    def validate(self):
         return validate_run(
             self.lock,
             self.expectation,
             self.summary_refs,
             self.root,
-            output_artifacts=self.output_refs if numerical else [],
             case_results=self.report_refs,
-            require_numerical=numerical,
         )
 
     def cli_input(self):
@@ -313,6 +297,5 @@ class Bundle:
             "lock": self.lock.to_dict(),
             "expectation": self.expectation,
             "worker_summaries": self.summary_refs,
-            "output_artifacts": self.output_refs,
             "case_results": self.report_refs,
         }

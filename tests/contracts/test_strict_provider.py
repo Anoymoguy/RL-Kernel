@@ -242,10 +242,15 @@ def test_worker_call_scope_and_case_records():
                 "count": 1,
             }
         ],
-        "output_names": ["selected_logprob"],
-        "numerical_policy": "json_float64_bits",
     }
     assert CaseSpec.from_dict(case).case_id == "case-1"
+    # Acceptance policies belong to the numerical harness, not manifest cases.
+    for field, value in (
+        ("output_names", ["selected_logprob"]),
+        ("numerical_policy", {"comparison": "exact"}),
+    ):
+        with pytest.raises(StrictProviderError, match="Unknown field"):
+            CaseSpec.from_dict({**case, field: value})
     case["required_calls"].append(copy.deepcopy(case["required_calls"][0]))
     with pytest.raises(StrictProviderError, match="Duplicate required call"):
         CaseSpec.from_dict(case)

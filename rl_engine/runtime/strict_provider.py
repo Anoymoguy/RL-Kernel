@@ -4,8 +4,9 @@
 """Fail-closed, single-worker manifest execution lifecycle.
 
 This module imports neither engines nor integration adapters. It consumes the
-trusted resolved-call protocol; cross-worker coverage and numerical validation
-belong to an independent validator, not ``finish``.
+trusted resolved-call protocol. An independent manifest validator checks
+cross-worker provenance and coverage; the operator/model harness checks numerical
+outputs. ``finish`` only seals this worker's execution evidence.
 
 All binding/model/platform/execution fields participate in exact lock matching,
 including extension fields. Observers put facts which are only diagnostic in

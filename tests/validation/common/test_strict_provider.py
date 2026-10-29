@@ -5,7 +5,6 @@ from __future__ import annotations
 
 from copy import deepcopy
 import json
-import struct
 
 import pytest
 
@@ -30,16 +29,17 @@ def bundle(tmp_path):
     return Bundle(tmp_path)
 
 
-def test_nonempty_actual_outputs_and_manifest_status_are_separate(bundle):
+def test_manifest_evidence_does_not_claim_numerical_or_hardware_acceptance(bundle):
     result = bundle.validate()
-    assert result["manifest_enforcement"] == result["numerical_parity"] == "passed"
-    assert result["compared_elements"] == 2
-    assert result["call_count"] == 4
-    assert result["hardware_validation"] == "not_evaluated"
-    result = bundle.validate(numerical=False)
     assert result["manifest_enforcement"] == "passed"
+    assert result["coverage"] == "passed"
+    assert result["validation_scope"] == "identity_configuration_provenance"
+    assert result["call_count"] == 4
     assert result["numerical_parity"] == "not_evaluated"
-    assert result["compared_elements"] == 0
+    assert result["hardware_validation"] == "not_evaluated"
+    assert "compared_elements" not in result
+    assert "numeric_evidence_format" not in result
+    assert "output_artifacts" not in result["evidence"]
 
 
 def test_independent_coverage_catches_missing_layer(bundle):
@@ -168,43 +168,34 @@ def test_zero_cases_and_duplicate_cases_are_rejected(bundle):
 @pytest.mark.parametrize(
     "mutation", ["tokens", "positions", "mask", "state_boundary", "logprob_semantics"]
 )
-def test_pair_context_must_match_predeclared_case(bundle, mutation):
-    bundle.outputs[1]["comparison_context"][mutation] = "different_context"
+def test_call_context_must_match_predeclared_case(bundle, mutation):
+    context = bundle.summaries[1]["calls"][0]["context"]
+    context["metadata"]["comparison_context"][mutation] = "different_context"
     bundle.save()
     with pytest.raises(StrictProviderError) as exc:
         bundle.validate()
-    assert exc.value.code == "pair_context_mismatch"
+    assert exc.value.code == "execution_context_mismatch"
 
 
-@pytest.mark.parametrize("mutation", ["one_ulp", "empty", "nan", "passed_boolean", "shape"])
-def test_actual_numeric_payload_required(bundle, mutation):
-    payload = bundle.outputs[1]["outputs"]["recurrent_state"]
-    if mutation == "one_ulp":
-        payload["data"][0] = struct.unpack("!d", (0x3FF4000000000001).to_bytes(8, "big"))[0]
-    elif mutation == "empty":
-        payload["data"] = []
-        payload["shape"] = [0]
-    elif mutation == "nan":
-        payload["data"][0] = float("nan")
-    elif mutation == "passed_boolean":
-        bundle.outputs[1]["outputs"]["recurrent_state"] = {"passed": True}
+@pytest.mark.parametrize("value", [None, {}, [], "unverified_context"])
+def test_missing_or_invalid_call_context_cannot_pass(bundle, value):
+    metadata = bundle.summaries[0]["calls"][0]["context"]["metadata"]
+    if value is None:
+        metadata.pop("comparison_context")
     else:
-        payload["shape"] = [1, 2]
+        metadata["comparison_context"] = value
     bundle.save()
-    with pytest.raises(StrictProviderError):
-        bundle.validate()
-
-
-def test_json_policy_explicitly_defines_signed_zero(bundle):
-    bundle.outputs[1]["outputs"]["recurrent_state"]["data"][1] = 0.0
-    bundle.save()
-    assert bundle.validate()["numerical_parity"] == "passed"
-    bundle.expectation["cases"][0]["numerical_policy"] = "json_float64_bits"
-    bundle.expectation.pop("expectation_id")
-    bundle.expectation["expectation_id"] = fingerprint(bundle.expectation)
     with pytest.raises(StrictProviderError) as exc:
         bundle.validate()
-    assert exc.value.code == "numeric_mismatch"
+    assert exc.value.code == "execution_context_mismatch"
+
+
+def test_undeclared_case_cannot_supply_its_own_execution_context(bundle):
+    bundle.summaries[0]["calls"][0]["context"]["case_id"] = "unregistered_case"
+    bundle.save()
+    with pytest.raises(StrictProviderError) as exc:
+        bundle.validate()
+    assert exc.value.code == "invalid_coverage"
 
 
 def test_component_cannot_claim_full_model_by_changing_label(bundle):
@@ -223,19 +214,6 @@ def test_component_cannot_claim_full_model_by_changing_label(bundle):
             identity_artifacts=bundle.expectation["identity_artifacts"],
         )
     assert exc.value.code == "unsupported_scope"
-
-
-def test_supplied_missing_numeric_comparison_cannot_pass_parity(bundle):
-    with pytest.raises(StrictProviderError) as exc:
-        validate_run(
-            bundle.lock,
-            bundle.expectation,
-            bundle.summary_refs,
-            bundle.root,
-            case_results=bundle.report_refs,
-            require_numerical=True,
-        )
-    assert exc.value.code == "missing_numeric_evidence"
 
 
 def test_real_session_finish_is_consumable_without_reconstructing_coverage(bundle):
@@ -261,13 +239,14 @@ def test_real_session_finish_is_consumable_without_reconstructing_coverage(bundl
         for call in template["calls"]:
             call["context"]["call_id"] = f"prompt_layer_{call['context']['layer_id']}"
             context = CallContext.from_dict(call["context"])
+            output = object()
             resolved = ResolvedCall(
                 bundle.plan,
-                lambda: [1.25, -0.0],
+                lambda output=output: output,
                 call_context=context,
                 recheck=lambda: {"actual_shape": [2]},
             )
-            assert session.execute(resolved, context) == [1.25, -0.0]
+            assert session.execute(resolved, context) is output
         summaries.append(session.finish())
     bundle.summaries = summaries
     for call in bundle.expectation["cases"][0]["required_calls"]:

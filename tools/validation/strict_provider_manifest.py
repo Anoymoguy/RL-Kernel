@@ -2,10 +2,11 @@
 # SPDX-License-Identifier: Apache-2.0
 # Copyright (c) 2026 RL-Kernel Contributors
 
-"""Collect supplied candidates, seal locks, and independently validate evidence.
+"""Collect candidates, seal locks, and validate identity/configuration provenance.
 
 This CLI does not fabricate a live vLLM/VIME runner. ``enforce`` rejects until a
 real execution adapter supplies resolved calls and completion evidence.
+Numerical output comparison belongs to the existing operator/model harness.
 """
 
 from __future__ import annotations
@@ -116,7 +117,6 @@ def main(argv: list[str] | None = None) -> int:
         parser.add_argument("--input", required=True, type=Path)
         parser.add_argument("--output", required=True, type=Path)
         parser.add_argument("--evidence-root", type=Path)
-        parser.add_argument("--require-numerical", action="store_true")
         args = parser.parse_args(argv)
         output = args.output
         if args.input.resolve() == output.resolve():
@@ -151,7 +151,6 @@ def main(argv: list[str] | None = None) -> int:
                 "lock",
                 "expectation",
                 "worker_summaries",
-                "output_artifacts",
                 "case_results",
             }
             if set(supplied) - allowed or not {
@@ -166,9 +165,7 @@ def main(argv: list[str] | None = None) -> int:
                 supplied["expectation"],
                 supplied["worker_summaries"],
                 args.evidence_root,
-                output_artifacts=supplied.get("output_artifacts", ()),
                 case_results=supplied["case_results"],
-                require_numerical=args.require_numerical,
             )
         _write_atomic(output, result)
         return 0

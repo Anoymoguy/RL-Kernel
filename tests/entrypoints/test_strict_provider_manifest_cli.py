@@ -39,7 +39,7 @@ def test_collect_candidate_and_seal_roundtrip(tmp_path):
     assert ProviderLock.from_dict(json.loads(sealed.read_text())).lock_id == bundle.lock.lock_id
 
 
-def test_validate_subprocess_reads_real_nonempty_payload(tmp_path):
+def test_validate_subprocess_checks_identity_and_provenance(tmp_path):
     bundle = Bundle(tmp_path / "evidence")
     supplied = tmp_path / "input.json"
     supplied.write_text(json.dumps(bundle.cli_input()), encoding="utf-8")
@@ -52,20 +52,28 @@ def test_validate_subprocess_reads_real_nonempty_payload(tmp_path):
         output,
         "--evidence-root",
         bundle.root,
-        "--require-numerical",
     )
     assert result.returncode == 0, result.stderr
     data = json.loads(output.read_text())
     assert data["manifest_enforcement"] == "passed"
-    assert data["numerical_parity"] == "passed"
-    assert data["compared_elements"] == 2
+    assert data["numerical_parity"] == "not_evaluated"
+    assert data["validation_scope"] == "identity_configuration_provenance"
+    assert "compared_elements" not in data
     assert data["hardware_validation"] == "not_evaluated"
     assert not list(tmp_path.glob(".result.json.*.tmp"))
 
 
 @pytest.mark.parametrize(
     "failure",
-    ["content_drift", "stale_attempt", "missing_input", "malformed_input", "enforce", "usage"],
+    [
+        "content_drift",
+        "stale_attempt",
+        "missing_input",
+        "malformed_input",
+        "enforce",
+        "usage",
+        "numerical_option",
+    ],
 )
 def test_cli_failure_never_leaves_old_passed_result(tmp_path, failure):
     bundle = Bundle(tmp_path / "evidence")
@@ -91,12 +99,13 @@ def test_cli_failure_never_leaves_old_passed_result(tmp_path, failure):
         output,
         "--evidence-root",
         bundle.root,
-        "--require-numerical",
     ]
     if failure == "usage":
         args.append("--invalid-option")
+    elif failure == "numerical_option":
+        args.append("--require-numerical")
     result = run_cli(*args)
-    assert result.returncode == (2 if failure == "usage" else 1)
+    assert result.returncode == (2 if failure in {"usage", "numerical_option"} else 1)
     data = json.loads(output.read_text())
     assert data["status"] == "failed"
     assert data["manifest_enforcement"] == "failed"
@@ -104,6 +113,26 @@ def test_cli_failure_never_leaves_old_passed_result(tmp_path, failure):
     if failure == "enforce":
         assert data["error"]["code"] == "execution_adapter_required"
     assert not list(tmp_path.glob(".result.json.*.tmp"))
+
+
+@pytest.mark.parametrize("outputs", [[], {"passed": True}])
+def test_numeric_output_bundle_cannot_be_misreported_as_manifest_acceptance(tmp_path, outputs):
+    bundle = Bundle(tmp_path / "evidence")
+    payload = {**bundle.cli_input(), "output_artifacts": outputs}
+    supplied = tmp_path / "input.json"
+    supplied.write_text(json.dumps(payload), encoding="utf-8")
+    output = tmp_path / "result.json"
+    output.write_text('{"manifest_enforcement":"passed","numerical_parity":"passed"}')
+    result = run_cli(
+        "validate", "--input", supplied, "--output", output, "--evidence-root", bundle.root
+    )
+    assert result.returncode == 1
+    data = json.loads(output.read_text())
+    assert data["status"] == "failed"
+    assert data["error"]["code"] == "invalid_evidence"
+    assert data["manifest_enforcement"] == "failed"
+    assert data["numerical_parity"] == "not_evaluated"
+    assert data["hardware_validation"] == "not_evaluated"
 
 
 def test_zero_cases_cannot_pass_subprocess(tmp_path):

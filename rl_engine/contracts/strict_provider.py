@@ -476,12 +476,16 @@ class ScopeSpec(_Record):
 
 
 class CaseSpec(_Record):
+    """Predeclared execution coverage and shared input/state identifiers.
+
+    Numerical output policies belong to the operator/model validation harness.
+    Adapters record comparison_context in CallContext.metadata so provenance
+    can be checked without reading or comparing numerical output tensors.
+    """
+
     @staticmethod
     def _validate(data):
-        _fields(
-            data,
-            ("case_id", "comparison_context", "required_calls", "output_names", "numerical_policy"),
-        )
+        _fields(data, ("case_id", "comparison_context", "required_calls"))
         _text(data["case_id"], "$.case_id")
         _object(data["comparison_context"], "$.comparison_context")
         if not data["comparison_context"]:
@@ -507,12 +511,6 @@ class CaseSpec(_Record):
             if identity in identities:
                 _error(path, "Duplicate required call; use its count field")
             identities.add(identity)
-        _list(data["output_names"], "$.output_names")
-        for i, name in enumerate(data["output_names"]):
-            _text(name, f"$.output_names[{i}]")
-        if len(set(data["output_names"])) != len(data["output_names"]):
-            _error("$.output_names", "Duplicate output name")
-        _enum(data["numerical_policy"], ("json_exact", "json_float64_bits"), "$.numerical_policy")
 
 
 class SnapshotActivationReceipt(_Record):
